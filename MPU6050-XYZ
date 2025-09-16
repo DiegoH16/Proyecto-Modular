@@ -1,0 +1,35 @@
+#include <Wire.h>
+#include <MPU6050.h>
+
+MPU6050 mpu;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  
+  Serial.println("Iniciando MPU6050...");
+  mpu.initialize();
+
+  if (mpu.testConnection()) {
+    Serial.println("MPU6050 conectado correctamente.");
+  } else {
+    Serial.println("Error al conectar con el MPU6050.");
+    while (1);
+  }
+}
+
+void loop() {
+  int16_t ax, ay, az;
+  int16_t gx, gy, gz;
+
+  // Obtener datos de aceleración y giroscopio
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+
+  // Mostrar aceleraciones en el monitor serie
+  Serial.print("Aceleracion (X,Y,Z): ");
+  Serial.print(ax); Serial.print(", ");
+  Serial.print(ay); Serial.print(", ");
+  Serial.println(az);
+
+  delay(200); // Muestra datos cada 200ms
+}
