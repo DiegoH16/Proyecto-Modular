@@ -1,0 +1,78 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <MPU6050.h>
+
+MPU6050 mpu;
+
+#define SDA_PIN 8
+#define SCL_PIN 9
+
+// Variables para filtro
+const int windowSize = 10; // tamaño del promedio móvil
+long buffer[windowSize];
+int indexBuffer = 0;
+long sumBuffer = 0;
+
+long baseline = 0; // valor promedio en reposo
+bool baselineSet = false;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  Serial.println("Iniciando MPU6050...");
+  mpu.initialize();
+
+  if (mpu.testConnection()) {
+    Serial.println("MPU6050 conectado correctamente.");
+  } else {
+    Serial.println("Error al conectar MPU6050.");
+    while (1);
+  }
+
+  // Inicializar buffer del filtro
+  for (int i = 0; i < windowSize; i++) {
+    buffer[i] = 0;
+  }
+}
+
+void loop() {
+  int16_t ax, ay, az, gx, gy, gz;
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+
+  // Magnitud de aceleración
+  long A = sqrt((long)ax * ax + (long)ay * ay + (long)az * az);
+
+  // Filtro: promedio móvil
+  sumBuffer -= buffer[indexBuffer];
+  buffer[indexBuffer] = A;
+  sumBuffer += buffer[indexBuffer];
+  indexBuffer = (indexBuffer + 1) % windowSize;
+  long A_filtered = sumBuffer / windowSize;
+
+  // Calibración del baseline (primeros segundos)
+  if (!baselineSet && millis() > 5000) { // espera 5s al inicio
+    baseline = A_filtered;
+    baselineSet = true;
+    Serial.print("Baseline establecido en: ");
+    Serial.println(baseline);
+  }
+
+  // Detección de evento (movimiento brusco)
+  if (baselineSet) {
+    long diff = abs(A_filtered - baseline);
+    if (diff > 2000) { // umbral ajustable
+      Serial.print("Movimiento detectado en t=");
+      Serial.print(millis());
+      Serial.print("ms  (Δ=");
+      Serial.print(diff);
+      Serial.println(")");
+    }
+  }
+
+  // Monitoreo continuo
+  Serial.print("A filtrado: ");
+  Serial.println(A_filtered);
+
+  delay(100); // cada 100 ms
+}
