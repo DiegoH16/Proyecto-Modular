@@ -1,0 +1,49 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include "MAX30105.h"
+#include "heartRate.h"
+
+MAX30105 particleSensor;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(8, 9); // SDA = 8, SCL = 9 en ESP32-S3
+
+  Serial.println("Iniciando sensor MAX30102...");
+
+  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+    Serial.println("No se pudo encontrar el MAX30102. Revisa las conexiones.");
+    while (1);
+  }
+
+  particleSensor.setup(); // Configuración por defecto: 69 muestras/seg
+  particleSensor.setPulseAmplitudeRed(0x0A); // Encender LED rojo bajo
+  particleSensor.setPulseAmplitudeIR(0x0A);  // Encender LED IR bajo
+}
+
+void loop() {
+  long irValue = particleSensor.getIR(); // Señal IR
+  long redValue = particleSensor.getRed(); // Señal Roja
+
+  // Detección básica de latido con IR
+  if (checkForBeat(irValue) == true) {
+    static int beatsPerMinute;
+    static long lastBeat = 0;
+    long delta = millis() - lastBeat;
+    lastBeat = millis();
+
+    beatsPerMinute = 60 / (delta / 1000.0);
+
+    if (beatsPerMinute > 20 && beatsPerMinute < 255) {
+      Serial.print("Latido detectado! BPM: ");
+      Serial.println(beatsPerMinute);
+    }
+  }
+
+  Serial.print("IR: ");
+  Serial.print(irValue);
+  Serial.print("  Red: ");
+  Serial.println(redValue);
+
+  delay(50);
+}
