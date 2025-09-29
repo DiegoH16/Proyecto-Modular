@@ -1,0 +1,22 @@
+#include <Arduino.h>
+
+// Pin ADC para la señal del AD8232
+#define ECG_PIN 1  // GPIO 1 como entrada analógica (ajusta si es necesario)
+
+// Variables
+int ecgValue = 0;
+
+void setup() {
+  Serial.begin(115200);
+  analogReadResolution(12);  // Resolución ADC en ESP32-S3: 12 bits (0-4095)
+  Serial.println("Iniciando lectura de ECG (AD8232)...");
+}
+
+void loop() {
+  ecgValue = analogRead(ECG_PIN);
+
+  // Enviar valor al Serial Plotter
+  Serial.println(ecgValue);
+
+  delay(5); // muestreo ~200 Hz
+}
