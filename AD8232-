@@ -1,0 +1,118 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include "MAX30105.h"
+#include "heartRate.h"
+
+// --- Pines I2C para ESP32-S3 ---
+const int I2C_SDA_PIN = 8;
+const int I2C_SCL_PIN = 9;
+MAX30105 particleSensor;
+
+// --- ECG AD8232 ---
+const int ECG_PIN = 1;
+const int SAMPLING_FREQUENCY = 250;
+const int SAMPLING_PERIOD_US = 1000000 / SAMPLING_FREQUENCY;
+
+// --- Variables para MAX30102 ---
+const byte RATE_SIZE = 4;
+byte rates[RATE_SIZE];
+byte rateSpot = 0;
+long lastBeat = 0;
+float beatsPerMinute;
+int beatAvg;
+
+// --- Timing No Bloqueante ---
+unsigned long lastMaxRead = 0;
+const long maxInterval = 50;
+unsigned long lastEcgReadUs = 0;
+
+// --- Filtro ECG ---
+float ecgBaseline = 2048.0;
+const float baselineAlpha = 0.05;
+
+void setup() {
+    Serial.begin(115200);
+    Serial.println("Iniciando sistema de monitoreo dual...");
+
+    // I2C
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    
+    // MAX30102
+    if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+        Serial.println("MAX30102 no encontrado - Continuando solo con ECG");
+    } else {
+        Serial.println("MAX30102 iniciado");
+        byte ledBrightness = 0x1F;
+        byte sampleAverage = 4;
+        byte ledMode = 2;
+        int sampleRate = 400;
+        int pulseWidth = 411;
+        int adcRange = 4096;
+        
+        particleSensor.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
+        particleSensor.setPulseAmplitudeRed(0x0A);
+        particleSensor.setPulseAmplitudeIR(0x0A);
+    }
+
+    // ECG
+    pinMode(ECG_PIN, INPUT);
+    analogReadResolution(12);
+    
+    Serial.println("ECG_Raw,ECG_Filtered");
+}
+
+void loop() {
+    if (millis() - lastMaxRead >= maxInterval) {
+        lastMaxRead = millis();
+        handleMAX30102();
+    }
+
+    if (micros() - lastEcgReadUs >= SAMPLING_PERIOD_US) {
+        lastEcgReadUs = micros();
+        handleECG();
+    }
+}
+
+void handleMAX30102() {
+    long irValue = particleSensor.getIR();
+    
+    if (irValue < 50000) return;
+    
+    if (checkForBeat(irValue)) {
+        long delta = millis() - lastBeat;
+        lastBeat = millis();
+        
+        beatsPerMinute = 60 / (delta / 1000.0);
+        
+        if (beatsPerMinute < 255 && beatsPerMinute > 20) {
+            rates[rateSpot++] = (byte)beatsPerMinute;
+            rateSpot %= RATE_SIZE;
+            
+            beatAvg = 0;
+            for (byte x = 0; x < RATE_SIZE; x++) {
+                beatAvg += rates[x];
+            }
+            beatAvg /= RATE_SIZE;
+            
+            Serial.print("BPM: ");
+            Serial.print(beatsPerMinute);
+            Serial.print(" | Avg: ");
+            Serial.println(beatAvg);
+        }
+    }
+}
+
+void handleECG() {
+    int rawValue = analogRead(ECG_PIN);
+    int filteredValue = processECG(rawValue);
+    
+    Serial.print(rawValue);
+    Serial.print(",");
+    Serial.println(filteredValue);
+}
+
+int processECG(int rawValue) {
+    ecgBaseline = (baselineAlpha * rawValue) + ((1.0 - baselineAlpha) * ecgBaseline);
+    int filtered = rawValue - (int)ecgBaseline;
+    return constrain(filtered, -2048, 2048);
+}
