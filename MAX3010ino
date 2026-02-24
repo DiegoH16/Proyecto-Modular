@@ -1,0 +1,62 @@
+#include <Wire.h>
+#include <MAX30105.h>
+#include "heartRate.h"
+
+MAX30105 particleSensor;
+
+#define RATE_SIZE 5
+float rates[RATE_SIZE];
+byte rateSpot = 0;
+long lastBeat = 0;
+byte beatCount = 0;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(8, 9);  // SDA, SCL
+
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("MAX30102 no encontrado");
+    while (1);
+  }
+
+  particleSensor.setup();
+  particleSensor.setPulseAmplitudeRed(0x0A);
+  particleSensor.setPulseAmplitudeIR(0x1F);
+
+  Serial.println("MAX30102 listo");
+}
+
+void loop() {
+  long irValue = particleSensor.getIR();
+
+  if (checkForBeat(irValue)) {
+
+    long delta = millis() - lastBeat;
+    lastBeat = millis();
+
+    float bpm = 60.0 / (delta / 1000.0);
+
+    if (bpm > 40 && bpm < 180) {
+
+  rates[rateSpot++] = bpm;
+  rateSpot %= RATE_SIZE;
+
+    if (beatCount < RATE_SIZE) {
+      beatCount++;
+    }
+
+  if (beatCount == RATE_SIZE) {
+
+    float avgBPM = 0;
+    for (byte i = 0; i < RATE_SIZE; i++) {
+      avgBPM += rates[i];
+    }
+
+    avgBPM /= RATE_SIZE;
+
+    Serial.print("FC Promedio: ");
+    Serial.println(avgBPM);
+  }
+  }
+  }
+}
