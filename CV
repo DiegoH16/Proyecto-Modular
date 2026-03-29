@@ -1,0 +1,305 @@
+function monitorBiometricoHibrido()
+    clear; clc; close all; 
+
+    % --- 1. CONFIGURACIÓN ---
+    puertoTobillo = "COM4"; % Verifica tu puerto
+    puertoBiceps  = "COM5"; % Verifica tu puerto
+    baudios = 115200;
+    ventana_tiempo_s = 60; 
+
+    % Variables de Estado (compartidas con funciones anidadas)
+    capturando = false;
+    
+    tobilloConectado = false;
+    bicepsConectado = false;
+
+    disp("Buscando dispositivos...");
+
+  % --- 2. CONEXIÓN SEGURA A PUERTOS ---
+    tobilloConectado = false;
+    bicepsConectado = false;
+    
+    % INICIALIZAMOS LAS VARIABLES COMO VACÍAS PARA EVITAR ERRORES
+    sTobillo = []; 
+    sBiceps = [];  
+
+    disp("Buscando dispositivos...");
+
+    try
+        sTobillo = serialport(puertoTobillo, baudios);
+        configureTerminator(sTobillo, "LF"); 
+        flush(sTobillo);
+        tobilloConectado = true;
+        disp("Tobillo conectado en " + puertoTobillo);
+    catch
+        disp("Tobillo NO detectado en " + puertoTobillo);
+    end
+
+    try
+        sBiceps = serialport(puertoBiceps, baudios);
+        configureTerminator(sBiceps, "LF"); 
+        flush(sBiceps);
+        bicepsConectado = true;
+        disp("Bíceps conectado en " + puertoBiceps);
+    catch
+        disp("Bíceps NO detectado en " + puertoBiceps);
+    end
+    simulacion = ~(tobilloConectado || bicepsConectado);
+    if simulacion
+        disp("Modo simulación activado.");
+    end
+
+    % --- 3. INTERFAZ GRÁFICA (GUI) ---
+    fig = uifigure('Name', 'Monitor Biométrico Dual', 'Color', 'w', 'Position', [100, 100, 1000, 800]);
+    gMain = uigridlayout(fig, [4, 2], 'Padding', [20 20 20 20], 'RowSpacing', 15, 'ColumnSpacing', 15, 'RowHeight', {250, 250, 120, 80});
+
+    % Gráfico EMG
+    pnlEMG = uipanel(gMain, 'BackgroundColor', 'w'); pnlEMG.Layout.Row = 1; pnlEMG.Layout.Column = [1 2]; 
+    gEMG = uigridlayout(pnlEMG, [2, 1], 'RowHeight', {20, '1x'});
+    uilabel(gEMG, 'Text', 'Electromiografía (EMG)', 'FontWeight', 'bold', 'FontSize', 14);
+    axEMG = uiaxes(gEMG); axEMG.XGrid = 'on'; axEMG.YGrid = 'on'; ylabel(axEMG, 'ADC');
+
+    % Gráfico SVM (Actigrafía)
+    pnlSVM = uipanel(gMain, 'BackgroundColor', 'w'); pnlSVM.Layout.Row = 2; pnlSVM.Layout.Column = [1 2]; 
+    gSVM = uigridlayout(pnlSVM, [2, 1], 'RowHeight', {20, '1x'});
+    uilabel(gSVM, 'Text', 'Actigrafía (SVM)', 'FontWeight', 'bold', 'FontSize', 14);
+    axSVM = uiaxes(gSVM); axSVM.XGrid = 'on'; axSVM.YGrid = 'on'; ylabel(axSVM, 'm/s^2');
+
+    % Signos Vitales (SpO2 y BPM)
+    pnlSPO2 = uipanel(gMain, 'BorderWidth', 0, 'BackgroundColor', 'w'); pnlSPO2.Layout.Row = 3; pnlSPO2.Layout.Column = 1;
+    ulbSPO2Value = uilabel(pnlSPO2, 'Text', '--% SpO2', 'FontSize', 55, 'FontWeight', 'bold', 'FontColor', [0.2 0.5 0.9], 'Position', [50 30 300 80]); 
+
+    pnlBPM = uipanel(gMain, 'BorderWidth', 0, 'BackgroundColor', 'w'); pnlBPM.Layout.Row = 3; pnlBPM.Layout.Column = 2;
+    uilabel(pnlBPM, 'Text', char(10084), 'FontSize', 60, 'FontColor', 'r', 'Position', [20 30 80 80]); 
+    ulbBPMValue = uilabel(pnlBPM, 'Text', '-- BPM', 'FontSize', 48, 'FontWeight', 'bold', 'Position', [100 30 250 80]); 
+
+    % Botón Control
+    btnControl = uibutton(gMain, 'Text', 'Iniciar Captura', 'FontSize', 24, 'FontWeight', 'bold', 'BackgroundColor', [0.8 0.8 0.8]);
+    btnControl.Layout.Row = 4; btnControl.Layout.Column = [1 2]; 
+
+    % --- 4. VARIABLES DE DIBUJO Y PROCESAMIENTO ---
+    lnEMG = animatedline(axEMG, 'Color', [1 0.5 0], 'LineWidth', 1.5); 
+    lnSVM = animatedline(axSVM, 'Color', [0 0.4 1], 'LineWidth', 1.5); 
+    historialTobillo = [];
+    historialBiceps = []; 
+
+    % --- Variables para la Envolvente EMG (AD8232) ---
+    emg_baseline = 1870; % Valor central inicial estimado
+    emg_envolvente = 0;
+    alpha_emg = 0.15; % Factor de suavizado (0.0 = plano, 1.0 = crudo)
+
+    % Variables para Matemáticas del MAX30105
+    tamano_ventana = 100; % ~4 segundos de datos a 25Hz
+    bufferRed = zeros(1, tamano_ventana);
+    bufferIR  = zeros(1, tamano_ventana);
+    bufferT   = zeros(1, tamano_ventana);
+    idxMuestra = 1;
+    
+    % Filtros suaves para la interfaz
+    spo2_interfaz = 0;
+    bpm_interfaz = 0;
+
+    % Callback Botón
+    btnControl.ButtonPushedFcn = @(src, event) toggleCapture(src, tobilloConectado, sTobillo, bicepsConectado, sBiceps);
+    
+    % Limpieza al cerrar
+    cleanupObj = onCleanup(@() finalizarCaptura(tobilloConectado, bicepsConectado, sTobillo, sBiceps, historialTobillo, historialBiceps));
+
+    % --- 5. BUCLE PRINCIPAL ---
+    t_sim = 0; 
+    while ishandle(fig)
+        datosNuevos = false; 
+        
+        if capturando 
+            
+            % LECTURA TOBILLO (Actigrafía y Envolvente EMG)
+            if tobilloConectado && sTobillo.NumBytesAvailable > 0
+                trama = strip(readline(sTobillo));
+                datos_str = split(trama, ",");
+                if length(datos_str) == 5 
+                    datos_num = str2double(datos_str)';
+                    if ~any(isnan(datos_num))
+                        t = datos_num(1) / 1000; 
+                        ax = datos_num(2); ay = datos_num(3); az = datos_num(4); emg_crudo = datos_num(5);
+                        svm = sqrt(ax^2 + ay^2 + az^2);
+                        
+                        % --- PROCESAMIENTO DIGITAL EMG (Envolvente) ---
+                        % 1. Auto-calibrar la línea base (Filtro ultra-lento para encontrar el centro exacto)
+                        emg_baseline = (0.999 * emg_baseline) + (0.001 * emg_crudo);
+                        
+                        % 2. Rectificar (Valor absoluto de los picos respecto al centro)
+                        emg_rectificado = abs(emg_crudo - emg_baseline);
+                        
+                        % 3. Crear la envolvente (Filtro rápido)
+                        emg_envolvente = (alpha_emg * emg_rectificado) + ((1 - alpha_emg) * emg_envolvente);
+                        
+                        % Amplificamos visualmente x2 para que resalte en la interfaz
+                        emg_visual = emg_envolvente * 2; 
+                        
+                        % Guardar y graficar los datos procesados
+                        historialTobillo = [historialTobillo; t, ax, ay, az, svm, emg_visual]; 
+                        addpoints(lnEMG, t, emg_visual); 
+                        addpoints(lnSVM, t, svm);
+                        
+                        actualizarEjeX(axEMG, axSVM, t, ventana_tiempo_s);
+                        datosNuevos = true;
+                    end
+                end
+            end
+            
+            % LECTURA BÍCEPS (Procesamiento de Datos Crudos RAW a SpO2/BPM)
+            if bicepsConectado && sBiceps.NumBytesAvailable > 0
+                trama = strip(readline(sBiceps));
+                if strlength(trama) > 0 && ~contains(trama, "Inicio") && ~contains(trama, "FIN")
+                    datos_str = split(trama, ",");
+                    if length(datos_str) == 3 % Tiempo, Rojo Crudo, IR Crudo
+                        datos_num = str2double(datos_str)';
+                        if ~any(isnan(datos_num))
+                            t_biceps = datos_num(1) / 1000;
+                            rojo_raw = datos_num(2);
+                            ir_raw = datos_num(3);
+                            
+                            % 1. Desplazar la ventana de memoria (FIFO)
+                            bufferRed = [bufferRed(2:end), rojo_raw];
+                            bufferIR  = [bufferIR(2:end), ir_raw];
+                            bufferT   = [bufferT(2:end), t_biceps];
+                            
+                            % 2. Calcular signos vitales cada 25 muestras (~1 vez por segundo)
+                            if mod(idxMuestra, 25) == 0
+                                
+                                % Si hay un dedo puesto (Mucha luz reflejada)
+                                if mean(bufferIR) > 10000 
+                                    
+                                    % --- CÁLCULO DE SpO2 (Filtrado y Calibrado) ---
+                                    % 1. Limpiar el ruido de alta frecuencia (Filtro Pasa-Bajos)
+                                    red_limpio = movmean(bufferRed, 5);
+                                    ir_limpio  = movmean(bufferIR, 5);
+                                    
+                                    % 2. Componente Estática (DC) - El promedio de la señal limpia
+                                    dc_red = mean(red_limpio);
+                                    dc_ir  = mean(ir_limpio);
+                                    
+                                    % 3. Componente Dinámica (AC) - Amplitud de la onda sin la estática
+                                    ac_red = std(red_limpio - dc_red);
+                                    ac_ir  = std(ir_limpio - dc_ir);
+                                    
+                                    % 4. Ratio de Absorción (R)
+                                    R = (ac_red / dc_red) / (ac_ir / dc_ir);
+                                    
+                                    % 5. Fórmula Empírica Calibrada (Ajuste estándar Maxim)
+                                    % Coeficientes comunes: A = 110, B = 25
+                                    spo2_calculado = 110 - (25 * R);
+                                    
+                                    % Topes lógicos de realismo biológico
+                                    if spo2_calculado > 100
+                                        spo2_calculado = 99; 
+                                    end
+
+                                    % --- CÁLCULO DE BPM ---
+                                    % Le quitamos la estática a la señal IR para dejar solo los latidos
+                                    onda_pulso = bufferIR - dc_ir; 
+                                    onda_suavizada = movmean(onda_pulso, 5); % Filtro anti-ruido
+                                    
+                                    try
+                                        % Encontramos los picos (latidos) usando la herramienta de MATLAB
+                                        [picos, locs] = findpeaks(onda_suavizada, 'MinPeakProminence', ac_ir*0.4, 'MinPeakDistance', 10);
+                                        
+                                        if length(locs) > 1
+                                            dt = diff(bufferT(locs)); % Tiempo entre latidos
+                                            bpm_calculado = mean(60 ./ dt);
+                                            
+                                            % Filtro de realismo biológico
+                                            if bpm_calculado > 40 && bpm_calculado < 180
+                                                if bpm_interfaz == 0, bpm_interfaz = bpm_calculado; else
+                                                    bpm_interfaz = (0.2 * bpm_calculado) + (0.8 * bpm_interfaz); % Suavizado visual
+                                                end
+                                                ulbBPMValue.Text = sprintf("%d BPM", round(bpm_interfaz)); 
+                                            end
+                                        end
+                                    catch
+                                        % Silencio si findpeaks no encuentra suficientes latidos aún
+                                    end
+                                    
+                                    % Mostrar SpO2 si es realista
+                                    if spo2_calculado > 70 && spo2_calculado <= 100
+                                        if spo2_interfaz == 0, spo2_interfaz = spo2_calculado; else
+                                            spo2_interfaz = (0.2 * spo2_calculado) + (0.8 * spo2_interfaz); % Suavizado visual
+                                        end
+                                        ulbSPO2Value.Text = sprintf("%d%% SpO2", round(spo2_interfaz)); 
+                                    end
+                                    
+                                else
+                                    % Si quitaron el dedo
+                                    ulbBPMValue.Text = "-- BPM";
+                                    ulbSPO2Value.Text = "--% SpO2";
+                                    bpm_interfaz = 0; spo2_interfaz = 0;
+                                end
+                            end
+                            
+                            % Guardar para el CSV final (Guardamos los procesados, no los crudos)
+                            historialBiceps = [historialBiceps; t_biceps, bpm_interfaz, spo2_interfaz]; 
+                            idxMuestra = idxMuestra + 1;
+                            datosNuevos = true;
+                        end
+                    end
+                end
+            end
+
+            % SIMULACIÓN
+            if simulacion
+                t_sim = t_sim + 0.02;
+                emg = 300 + 100*sin(2*pi*2*t_sim) + 50*randn();
+                svm = 10 + 20*exp(-t_sim/5).*sin(2*pi*1*t_sim) + 5*randn(); 
+                addpoints(lnEMG, t_sim, emg); addpoints(lnSVM, t_sim, svm);
+                actualizarEjeX(axEMG, axSVM, t_sim, ventana_tiempo_s);
+                
+                if mod(round(t_sim*50), 50) == 0 
+                    ulbBPMValue.Text = sprintf("%d BPM", randi([75, 85])); 
+                    ulbSPO2Value.Text = sprintf("%d%% SpO2", randi([96, 99])); 
+                end
+                datosNuevos = true; pause(0.02); 
+            end
+        end
+        
+        drawnow limitrate; 
+        if ~datosNuevos || ~capturando
+            pause(0.01); 
+        end
+    end
+
+    % --- 6. FUNCIONES AUXILIARES ---
+   function toggleCapture(btn, tConn, sT, bConn, sB)
+        capturando = ~capturando;
+        if capturando
+            btn.Text = 'Detener Captura';
+            btn.BackgroundColor = [0.9 0.6 0.2]; 
+            if tConn, flush(sT); end
+            if bConn, flush(sB); end
+        else
+            btn.Text = 'Iniciar Captura';
+            btn.BackgroundColor = [0.8 0.8 0.8]; 
+        end
+    end
+
+    function actualizarEjeX(axE, axS, t_actual, ventana)
+        min_act = floor(t_actual / ventana);
+        xlim(axE, [min_act*ventana, (min_act+1)*ventana]);
+        xlim(axS, [min_act*ventana, (min_act+1)*ventana]);
+    end
+
+    function finalizarCaptura(tConn, bConn, sT, sB, hTobillo, hBiceps)
+        if tConn
+            clear sT; 
+            if ~isempty(hTobillo)
+                writetable(array2table(hTobillo, 'VariableNames', {'Tiempo_s', 'Ax', 'Ay', 'Az', 'SVM', 'EMG'}), 'datos_tobillo.csv');
+            end
+        end
+        if bConn
+            clear sB; 
+            if ~isempty(hBiceps)
+                writetable(array2table(hBiceps, 'VariableNames', {'Tiempo_s', 'BPM', 'SpO2'}), 'datos_biceps.csv');
+            end
+        end
+        disp("¡Puertos cerrados y datos guardados exitosamente!");
+    end
+end
