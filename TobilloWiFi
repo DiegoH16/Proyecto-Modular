@@ -1,6 +1,6 @@
 /*
  * DISPOSITIVO TOBILLO: Movimientos (MPU6050) + EMG (Muestreo Continuo)
- * Hardware: ESP32 + MPU6050 (I2C) + Sensor EMG (Pin Analógico 34)
+ * Hardware: ESP32 + MPU6050 (I2C) + Sensor EMG (Pin Analógico 4)
  */
 
 #include <Wire.h>
@@ -15,7 +15,7 @@ const char* password = "tqnfTMn8dR"; // Pon tu contraseña
 
 // --- CONFIGURACIÓN UDP ---
 const char* ip_computadora = "192.168.100.30"; 
-const int puerto_udp = 8080; 
+const int puerto_udp = 8888; 
 
 WiFiUDP udp;
 
