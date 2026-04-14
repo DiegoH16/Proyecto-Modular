@@ -10,11 +10,11 @@
 
 // --- CONFIGURACIÓN WI-FI ---
 const char* ssid = "MEGACABLE-2.4G-CCAB";     
-const char* password = "CONTRASEÑA_DEL_WIFI"; 
+const char* password = "tqnfTMn8dR"; 
 
 // --- CONFIGURACIÓN UDP ---
 const char* ip_computadora = "192.168.100.30";
-const int puerto_udp = 8081; 
+const int puerto_udp = 8889; 
 
 WiFiUDP udp;
 
