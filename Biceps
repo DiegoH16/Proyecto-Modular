@@ -1,93 +1,43 @@
 /*
- * DISPOSITIVO BÍCEPS: SpO2 y Frecuencia Cardíaca
- * Hardware: ESP32 + MAX30102/5 (I2C)
+ * DISPOSITIVO BÍCEPS: Adquisición RAW a 100Hz (Sin cálculos pesados)
+ * Envía: Tiempo (ms), Rojo Crudo, IR Crudo
  */
 
 #include <Wire.h>
 #include "MAX30105.h"
-#include "spo2_algorithm.h"
 
 MAX30105 particleSensor;
-
-// --- VARIABLES DEL ALGORITMO ---
-const int32_t TAMANO_BUFFER = 100;
-uint32_t irBuffer[TAMANO_BUFFER];
-uint32_t redBuffer[TAMANO_BUFFER];
-
-int32_t spo2;
-int8_t validSPO2;
-int32_t heartRate;
-int8_t validHeartRate;
-
-// --- VARIABLES DE FILTRADO (EMA) ---
-float bpmFiltro = 0;
-float spo2Filtro = 0;
-const float ALPHA = 0.2; // Balance ideal entre rapidez y suavidad
-bool primeraLectura = true;
-
 unsigned long tiempoInicio = 0;
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin();
+  delay(1000);
+  Wire.begin(21, 22);
+  Wire.setClock(400000); // I2C muy rápido
 
   if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
-    Serial.println("Error: MAX3010x no encontrado. Revisa I2C.");
-    while (1) { delay(10); }
+    while (1) { yield(); }
   }
 
-  // Configuración del MAX3010x
-  // ledBrightness=60, sampleAverage=8, ledMode=2, sampleRate=100, pulseWidth=411, adcRange=4096
-  particleSensor.setup(60, 8, 2, 100, 411, 4096);
+  // ADC Range 16384, sample rate 100
+  particleSensor.setup(60, 4, 2, 100, 411, 16384);
+  particleSensor.setPulseAmplitudeRed(0x7A);
+  particleSensor.setPulseAmplitudeIR(0x3F);
 
-  // Llenar el buffer inicialmente
-  for (int i = 0 ; i < TAMANO_BUFFER ; i++) {
-    while (!particleSensor.available()) particleSensor.check();
-    redBuffer[i] = particleSensor.getRed();
-    irBuffer[i] = particleSensor.getIR();
-    particleSensor.nextSample(); 
-  }
-  
   tiempoInicio = millis();
 }
 
 void loop() {
-  // 1. Calcular BPM y SpO2 sobre las 100 muestras actuales
-  maxim_heart_rate_and_oxygen_saturation(irBuffer, TAMANO_BUFFER, redBuffer, &spo2, &validSPO2, &heartRate, &validHeartRate);
-
-  // 2. Ventana Deslizante (Desplazar 25 muestras antiguas y leer 25 nuevas)
-  for (int i = 25; i < TAMANO_BUFFER; i++) {
-    redBuffer[i - 25] = redBuffer[i];
-    irBuffer[i - 25] = irBuffer[i];
-  }
+  particleSensor.check();
   
-  for (int i = 75; i < TAMANO_BUFFER; i++) {
-    while (!particleSensor.available()) particleSensor.check();
-    redBuffer[i] = particleSensor.getRed();
-    irBuffer[i] = particleSensor.getIR();
-    particleSensor.nextSample(); 
-  }
-
-  // 3. Compuerta Biológica y Filtro
-  // Verificar que el sensor detecta piel (> 50000 IR) y las variables son válidas
-  if (validHeartRate == 1 && validSPO2 == 1 && irBuffer[50] > 50000) { 
+  // Vaciamos el buffer a 100Hz directamente a MATLAB
+  while (particleSensor.available()) {
+    Serial.print(millis() - tiempoInicio);
+    Serial.print(",");
+    Serial.print(particleSensor.getFIFORed());
+    Serial.print(",");
+    Serial.println(particleSensor.getFIFOIR());
     
-    // Rango humano realista
-    if (heartRate > 40 && heartRate < 180 && spo2 > 70 && spo2 <= 100) {
-      
-      if (primeraLectura) {
-        bpmFiltro = heartRate;
-        spo2Filtro = spo2;
-        primeraLectura = false;
-      } else {
-        bpmFiltro = (ALPHA * heartRate) + ((1.0 - ALPHA) * bpmFiltro);
-        spo2Filtro = (ALPHA * spo2)      + ((1.0 - ALPHA) * spo2Filtro);
-      }
-
-      // Enviar trama CSV: T, BPM, SpO2
-      Serial.print(millis() - tiempoInicio); Serial.print(",");
-      Serial.print((int)bpmFiltro); Serial.print(",");
-      Serial.println((int)spo2Filtro);
-    }
+    particleSensor.nextSample();
   }
 }
