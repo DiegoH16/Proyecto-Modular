@@ -1,16 +1,28 @@
 /*
  * DISPOSITIVO TOBILLO: Movimientos (MPU6050) + EMG (Muestreo Continuo)
- * Hardware: ESP32 + MPU6050 (I2C) + Sensor EMG (Pin Analógico 34)
+ * Hardware: ESP32 + MPU6050 (I2C) + Sensor EMG (Pin Analógico 4)
  */
 
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+
+// --- CONFIGURACIÓN WI-FI ---
+const char* ssid = "MEGACABLE-2.4G-CCAB"; 
+const char* password = "tqnfTMn8dR"; // Pon tu contraseña
+
+// --- CONFIGURACIÓN UDP ---
+const char* ip_computadora = "192.168.100.30"; 
+const int puerto_udp = 8888; 
+
+WiFiUDP udp;
 
 Adafruit_MPU6050 mpu;
 
 // --- PINES Y CONSTANTES ---
-const int PIN_EMG = 34;                     // Pin ADC válido para el ESP32
+const int PIN_EMG = 4;                     // Pin ADC válido para el ESP32
 const int FRECUENCIA_MUESTREO_HZ = 50;      // Coincide con la lectura en MATLAB
 const unsigned long INTERVALO_MS = 1000 / FRECUENCIA_MUESTREO_HZ;
 
@@ -26,8 +38,13 @@ unsigned long ultimoMuestreo = 0;
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin();
-
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWi-Fi Conectado!");
   if (!mpu.begin()) {
     Serial.println("Error: MPU6050 no detectado. Revisa I2C.");
     while (1) { delay(10); } // Detener si falla
@@ -72,12 +89,16 @@ void loop() {
         emgFiltro = (ALPHA_EMG * emgCrudo)   + ((1.0 - ALPHA_EMG) * emgFiltro);
       }
 
+      udp.beginPacket(ip_computadora, puerto_udp);
+
       // Enviar trama CSV estandarizada: T, Ax, Ay, Az, EMG
-      Serial.print(t_actual - tiempoInicio); Serial.print(",");
-      Serial.print(axFiltro, 2); Serial.print(",");
-      Serial.print(ayFiltro, 2); Serial.print(",");
-      Serial.print(azFiltro, 2); Serial.print(",");
-      Serial.println((int)emgFiltro);
+      udp.print(t_actual - tiempoInicio); udp.print(",");
+      udp.print(axFiltro, 2); udp.print(",");
+      udp.print(ayFiltro, 2); udp.print(",");
+      udp.print(azFiltro, 2); udp.print(",");
+      udp.print((int)emgFiltro); udp.print("\n");
+
+      udp.endPacket();
     }
   }
 }
