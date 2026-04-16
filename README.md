@@ -1,4 +1,4 @@
-AVA Nexus: Biometric Intelligence System
+#AVA Nexus: Biometric Intelligence System
 Intelligent Sleep Monitoring Platform for Restless Legs Syndrome (RLS) Diagnosis
 AVA Nexus es un ecosistema integral de grado médico diseñado para la detección y monitoreo del Síndrome de Piernas Inquietas (SPI). El sistema combina hardware embebido de alta velocidad, telemetría en tiempo real y análisis predictivo mediante Redes Neuronales Secuenciales en la nube.
 
