@@ -64,3 +64,8 @@ Este proyecto está diseñado bajo los requerimientos de usabilidad clínica, of
 
 ---
 [cite_start]*Desarrollado como solución tecnológica para la democratización del diagnóstico avanzado en medicina del sueño[cite: 203].*
+
+---
+## ⚖️ Licencia
+
+Este proyecto está bajo la Licencia MIT. Consulta el archivo [LICENSE](LICENSE) para más detalles.
