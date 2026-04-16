@@ -1,29 +1,31 @@
 # AVA Nexus: Biometric Intelligence System
-### *Intelligent Sleep Monitoring Platform for Restless Legs Syndrome (RLS) Diagnosis*
+### *Plataforma de Monitoreo Inteligente para el Diagnóstico del Síndrome de Piernas Inquietas (SPI)*
 
-**AVA Nexus** es un ecosistema integral de grado médico diseñado para la detección y monitoreo del Síndrome de Piernas Inquietas (SPI). El sistema combina hardware embebido de alta velocidad, telemetría inalámbrica y análisis predictivo mediante Redes Neuronales Secuenciales (LSTM) en la nube.
+[cite_start]**AVA Nexus** es un sistema modular integral de grado médico diseñado para la detección y monitoreo del Síndrome de Piernas Inquietas (SPI/RLS). [cite_start]El sistema utiliza una arquitectura distribuida de nodos inteligentes para capturar movimientos periódicos de las extremidades (PLMS) y correlacionarlos con parámetros fisiológicos en tiempo real[cite: 9, 34].
 
 ---
 
 ## 🚀 Características Principales
 
-* **Telemetría de Alta Fidelidad:** Muestreo estricto a **50Hz** para señales EMG, IMU y PPG.
-* **Agente AVA (AI Core):** Motor de inteligencia basado en una arquitectura **LSTM + Attention Mechanism** entrenada para identificar patrones de espasticidad con alta confianza probabilística.
-* **Arquitectura Híbrida:** Procesamiento local en MATLAB sincronizado con microservicios en **Google Cloud Platform (GCP)**.
-* **Reportes de Grado Clínico:** Generación automática de informes en formato **PDF (Vectorial)**, **EDF+ (Estándar Médico)** y **TXT (Data Cruda)**.
+* [cite_start]**Monitoreo Multimodal:** Adquisición simultánea de Electromiografía (EMG), Actigrafía (SVM), Frecuencia Cardíaca (BPM) y Saturación de Oxígeno (SpO2)[cite: 164].
+* [cite_start]**Telemetría de Alta Fidelidad:** Sincronización de nodos con una latencia inferior a los 20ms para una precisión diagnóstica superior[cite: 183].
+* [cite_start]**Algoritmos de Procesamiento (DSP):** Implementación de filtros EMA y detección de envolvente lineal para aislar la actividad del músculo tibial anterior[cite: 141, 184].
+* [cite_start]**Reportes de Grado Clínico:** Generación automática de informes detallados en formatos **PDF**, **EDF+ (European Data Format)** y **TXT** para su integración en el seguimiento médico[cite: 83, 84].
 
 ---
 
 ## 🛠️ Stack Tecnológico
 
-### **Hardware (Nodes)**
-* **Nodos Inteligentes:** ESP32 (Dual-Core) con transmisión de datagramas vía UDP/Wi-Fi.
-* **Sensores:** * `Ankle Node`: MPU6050 (6-DOF) + EMG Superficial (Rectificación y Envolvente).
-  * `Biceps Node`: MAX30105 (Fotopletismografía de alta sensibilidad para SpO2 y BPM).
+### **Hardware (Nodos Inteligentes)**
+* [cite_start]**Unidad Central:** Microcontroladores **ESP32-S3** con conectividad Wi-Fi y Bluetooth[cite: 95, 106].
+* [cite_start]**Sensorización Especializada[cite: 106]:**
+    * [cite_start]`Tobillo`: Acelerómetro/Giroscopio **MPU6050** de 6 ejes y frontend **AD8232** para biopotenciales de EMG[cite: 98, 99].
+    * [cite_start]`Bíceps`: Sensor óptico reflectivo **MAX30102** para fotopletismografía (PPG) de bajo consumo[cite: 97].
+* [cite_start]**Autonomía:** Gestión de energía mediante módulos **TP4056** para sesiones de monitoreo nocturno de ≥8 horas[cite: 100, 106].
 
 ### **Software & Cloud**
-* **Dashboard Central:** MATLAB (App Designer) para procesamiento digital de señales (DSP) y visualización en tiempo real.
-* **IA & Backend:** Python 3.x con FastAPI, TensorFlow/Keras para inferencia de modelos y despliegue en **Cloud Run (Docker Containers)**.
+* [cite_start]**Dashboard Central:** Interfaz desarrollada en **MATLAB** para el pre-filtrado de señales, rectificación de ondas y visualización dinámica[cite: 186, 191].
+* [cite_start]**Análisis Inteligente:** Algoritmos adaptativos para el cálculo de umbrales de movimiento y detección de microdespertares autonómicos[cite: 136, 165].
 
 ---
 
@@ -34,16 +36,17 @@
 * `/ava_cloud`: Modelo de Red Neuronal `.keras` y endpoint de FastAPI para la nube.
 * `/Docs`: Documentación técnica, esquemas de conexión y especificaciones del sistema.
 
----
+## 📊 Metodología de Evaluación
 
-## 📊 Metodología de Diagnóstico
-
-El sistema captura el **Vector de Magnitud (SVM)** y la activación muscular (**EMG**). Estos datos se empaquetan en tensores secuenciales de 500 muestras que son analizados por el **Agente AVA**. El sistema no solo detecta la anomalía, sino que calcula la confianza del diagnóstico en tiempo real, permitiendo un seguimiento objetivo y cuantitativo de la evolución del trastorno de piernas inquietas.
+[cite_start]El sistema identifica marcadores objetivos esenciales para evaluar la severidad del SPI[cite: 34]:
+* [cite_start]**Actividad Motora:** Detección de picos de aceleración mediante la magnitud del vector total (SVM)[cite: 156, 157].
+* [cite_start]**Correlación Autonómica:** Identificación de incrementos súbitos en la FC (≥ 10-15 BPM) asociados a eventos de movimiento[cite: 150].
+* [cite_start]**Diferencial Clínico:** Monitoreo de SpO2 (rango normal 95%-100%) para distinguir entre SPI puro y trastornos respiratorios como la Apnea Obstructiva[cite: 159, 160].
 
 ---
 
 ## 🛡️ Confidencialidad y Estándares
-Este proyecto está diseñado siguiendo los principios de exportación de datos médicos estándares (**European Data Format - EDF+**), garantizando que la información capturada sea compatible con software de análisis clínico especializado y mantenga la integridad de los datos del paciente.
+[cite_start]Este proyecto está diseñado bajo los requerimientos de usabilidad clínica, ofreciendo una solución portátil, cómoda y de bajo costo para el monitoreo domiciliario del sueño[cite: 87, 163, 169].
 
 ---
-*Desarrollado como solución tecnológica para el diagnóstico avanzado de trastornos del sueño.*
+[cite_start]*Desarrollado como solución tecnológica para la democratización del diagnóstico avanzado en medicina del sueño[cite: 203].*
