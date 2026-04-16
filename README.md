@@ -31,7 +31,7 @@
 
 * `/Firmware`: Código fuente C++ para los nodos inteligentes (ESP32).
 * `/Dashboard`: Script maestro de MATLAB y recursos de la interfaz de usuario (AVA Nexus Dashboard).
-* `/Cloud-IA`: Modelo de Red Neuronal `.keras` y endpoint de FastAPI para la nube.
+* `/ava_cloud`: Modelo de Red Neuronal `.keras` y endpoint de FastAPI para la nube.
 * `/Docs`: Documentación técnica, esquemas de conexión y especificaciones del sistema.
 
 ---
