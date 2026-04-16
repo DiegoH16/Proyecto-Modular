@@ -58,14 +58,6 @@ Este proyecto está diseñado bajo los requerimientos de usabilidad clínica, of
 *Desarrollado como solución tecnológica para la democratización del diagnóstico avanzado en medicina del sueño.*
 
 ---
-
-## 🛡️ Confidencialidad y Estándares
-[cite_start]Este proyecto está diseñado bajo los requerimientos de usabilidad clínica, ofreciendo una solución portátil, cómoda y de bajo costo para el monitoreo domiciliario del sueño[cite: 87, 163, 169].
-
----
-[cite_start]*Desarrollado como solución tecnológica para la democratización del diagnóstico avanzado en medicina del sueño[cite: 203].*
-
----
 ## ⚖️ Licencia
 
 Este proyecto está bajo la Licencia MIT. Consulta el archivo [LICENSE](LICENSE) para más detalles.
