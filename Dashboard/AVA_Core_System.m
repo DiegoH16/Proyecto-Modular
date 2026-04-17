@@ -2,7 +2,7 @@ function monitorBiometricoHibrido()
     clear all; clc; close all; 
     
     %% --- 1. CONFIGURACIÓN DE RED Y CLOUD ---
-    urlCloud = "https://motor-ava-965872531011.us-central1.run.app/predict";
+    urlCloud = 
     optsCloud = weboptions('MediaType','application/json', 'Timeout', 5);
     
     puertoTobillo = 8888;  
