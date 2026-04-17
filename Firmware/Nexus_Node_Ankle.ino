@@ -10,8 +10,8 @@
 #include <WiFiUdp.h>
 
 // --- CONFIGURACIÓN WI-FI ---
-const char* ssid = "MEGACABLE-2.4G-CCAB"; 
-const char* password = "tqnfTMn8dR"; // Pon tu contraseña
+const char* ssid = 
+const char* password = 
 
 // --- CONFIGURACIÓN UDP ---
 const char* ip_computadora = "192.168.100.30"; 
