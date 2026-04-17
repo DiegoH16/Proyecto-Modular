@@ -14,7 +14,7 @@ const char* ssid =
 const char* password = 
 
 // --- CONFIGURACIÓN UDP ---
-const char* ip_computadora = "192.168.100.30"; 
+const char* ip_computadora =  
 const int puerto_udp = 8888; 
 
 WiFiUDP udp;
