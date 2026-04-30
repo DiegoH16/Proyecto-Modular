@@ -1,4 +1,4 @@
-# AVA Nexus: Biometric Intelligence System
+# AVA Nexus: Sistema de monitoreo para diagnóstico de trastorno de sueño del síndrome de piernas inquietas
 ### *Plataforma de Monitoreo Inteligente para el Diagnóstico del Síndrome de Piernas Inquietas (SPI)*
 
 **AVA Nexus** es un sistema modular integral de grado médico diseñado para la detección y monitoreo del Síndrome de Piernas Inquietas (SPI/RLS). El sistema utiliza una arquitectura distribuida de nodos inteligentes para capturar movimientos periódicos de las extremidades (PLMS) y correlacionarlos con parámetros fisiológicos en tiempo real.
