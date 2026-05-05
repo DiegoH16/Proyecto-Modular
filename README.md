@@ -5,7 +5,7 @@
 
 ---
 
-## 🚀 Características Principales
+## Características Principales
 
 * **Monitoreo Multimodal:** Adquisición simultánea de Electromiografía (EMG), Actigrafía (SVM), Frecuencia Cardíaca (BPM) y Saturación de Oxígeno (SpO2).
 * **Telemetría de Alta Fidelidad:** Sincronización de nodos con una latencia inferior a los 20ms para una precisión diagnóstica superior.
@@ -14,7 +14,7 @@
 
 ---
 
-## 🛠️ Stack Tecnológico
+## Stack Tecnológico
 
 ### **Hardware (Nodos Inteligentes)**
 
@@ -30,16 +30,15 @@
 
 ---
 
-## 📁 Estructura del Repositorio
+## Estructura del Repositorio
 
 * `/Firmware`: Código fuente C++ para los nodos inteligentes (ESP32).
 * `/Dashboard`: Script maestro de MATLAB y recursos de la interfaz de usuario.
-* `/ava_cloud`: Modelo de Red Neuronal `.keras` y endpoint de FastAPI para la nube.
 * `/Docs`: Documentación técnica, esquemas de conexión y especificaciones del sistema.
 
 ---
 
-## 📊 Metodología de Evaluación
+## Metodología de Evaluación
 
 El sistema identifica marcadores objetivos esenciales para evaluar la severidad del SPI:
 
@@ -49,7 +48,7 @@ El sistema identifica marcadores objetivos esenciales para evaluar la severidad 
 
 ---
 
-## 🛡️ Confidencialidad y Estándares
+## Confidencialidad y Estándares
 Este proyecto está diseñado bajo los requerimientos de usabilidad clínica, ofreciendo una solución portátil, cómoda y de bajo costo para el monitoreo domiciliario del sueño. El uso del formato **EDF+** asegura la compatibilidad con los estándares internacionales de polisomnografía.
 
 
@@ -58,6 +57,6 @@ Este proyecto está diseñado bajo los requerimientos de usabilidad clínica, of
 *Desarrollado como solución tecnológica para la democratización del diagnóstico avanzado en medicina del sueño.*
 
 ---
-## ⚖️ Licencia
+## Licencia
 
 Este proyecto está bajo la Licencia MIT. Consulta el archivo [LICENSE](LICENSE) para más detalles.
