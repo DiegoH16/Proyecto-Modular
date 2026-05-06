@@ -45,7 +45,6 @@ AVA Nexus abandona las cajas negras y audita el sueño aplicando estrictamente l
 
 * `/Firmware`: Código fuente en C++ para los nodos ESP32 (Tobillo y Bíceps), con algoritmos *Drift-Free* y auto-calibración.
 * `/Dashboard`: Archivos fuente del núcleo de MATLAB (`AVA_Core_System.m`) con la arquitectura V6.2 Endurance.
-* `/Docs`: Documentación técnica, manuales clínicos, justificación fisiopatológica y esquemas de circuito.
 
 ---
 
