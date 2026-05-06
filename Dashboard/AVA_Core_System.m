@@ -1,4 +1,10 @@
-function AVA_Core_System()   
+function AVA_Core_System()
+    % =========================================================================
+    % PROYECTO: AVA Nexus V6.2 - MEDICAL GRADE RELEASE
+    % CARACTERÍSTICAS: OOM-Safe Chunking, Thread-Safe RingBuffer, Bounds
+    % Checking, Graceful Degradation, Precision Logging y AASM Robusto.
+    % =========================================================================
+    
     clearvars; clc; close all force;
     
     %% --- 0. VALIDACIÓN DE ENTORNO ---
@@ -189,7 +195,7 @@ function AVA_Core_System()
                         logSistema('INFO', 'TOBILLO conectado.');
                         Estado.PrimeraTramaTobillo = true;
                         
-                        % BUG #8: Sincronización Inicial Robusta
+                        % Sincronización Inicial Robusta
                         if Estado.PrimeraTramaBiceps
                             tDif = abs(Estado.T0_Tobillo - Estado.T0_Biceps); 
                             if tDif > 5.0
@@ -198,7 +204,7 @@ function AVA_Core_System()
                         end
                     end
                     
-                    % BUG #12: Validación estricta de rangos (OOM/Crash Protection)
+                    % Validación estricta de rangos (OOM/Crash Protection)
                     if ~validarDatosCrudos(datosTobillo, Config), continue; end
                     
                     tTobillo = tCrudo - Estado.T0_Tobillo;
@@ -215,7 +221,7 @@ function AVA_Core_System()
                     
                     contraccionActual = (Estado.Filtros.EMG_Env > Config.Umbrales.EMG_Contraccion) && (Estado.Filtros.SVM_Env > Config.Umbrales.SVM_Movimiento);
                     
-                    % BUG #4: Operación Atómica en Buffer Circular Gráfico
+                    % Operación Atómica en Buffer Circular Gráfico
                     BufferGrafica.T(BufferGrafica.Idx) = tTobillo;
                     BufferGrafica.EMG(BufferGrafica.Idx) = Estado.Filtros.EMG_Env;
                     BufferGrafica.SVM(BufferGrafica.Idx) = svmCrudo;
@@ -223,7 +229,7 @@ function AVA_Core_System()
                     BufferGrafica.Idx = mod(BufferGrafica.Idx, 300) + 1;
                     BufferGrafica.Count = min(BufferGrafica.Count + 1, 300);
                     
-                    % BUG #4 & BUG #3: UI Throttling Seguro (Batch Flush)
+                    % UI Throttling Seguro (Batch Flush)
                     if mod(Estado.UI.MuestrasRecibidas, Config.UI.RefrescoGraficas_Muestras) == 0
                         % Actualización LED
                         if contraccionActual ~= Estado.UI.ContraccionPrevia
@@ -235,7 +241,7 @@ function AVA_Core_System()
                             Estado.UI.ContraccionPrevia = contraccionActual;
                         end
                         
-                        % Extraer en orden correcto (BUG #3 Resuelto)
+                        % Extraer en orden correcto 
                         if BufferGrafica.Idx > 1
                             addpoints(UI.lineaEMG, BufferGrafica.T(1:BufferGrafica.Idx-1), BufferGrafica.EMG(1:BufferGrafica.Idx-1));
                             addpoints(UI.lineaSVM, BufferGrafica.T(1:BufferGrafica.Idx-1), BufferGrafica.SVM(1:BufferGrafica.Idx-1));
@@ -265,11 +271,11 @@ function AVA_Core_System()
                             UI.lblBPM.Text = nuevoBPM; Estado.UI.BPMText = nuevoBPM;
                         end
                         
-                        % BUG #3: Fast RAM Check OS-Agnostic
+                        % Fast RAM Check OS-Agnostic
                         mostrarMemoriaSegura();
                     end
                     
-                    % BUG #6 & BUG #10: BACKUP CHUNKED SEGURO
+                    % BACKUP CHUNKED SEGURO
                     Estado.UI.MuestrasDesdeUltimoBackup = Estado.UI.MuestrasDesdeUltimoBackup + 1;
                     if Estado.UI.MuestrasDesdeUltimoBackup > Config.Backup.MuestrasIntervalo
                         backupIncrementalOptimizado(RingBuffer, Estado.UltimoBackupIdx, Config.BufferMax.Muestras);
@@ -347,7 +353,7 @@ function AVA_Core_System()
         
         backupIncrementalOptimizado(RingBuffer, Estado.UltimoBackupIdx, Config.BufferMax.Muestras); 
         
-        [t_d, emg_d, svm_d, spo2_d, bpm_d, ~] = descomprimirRingBufferCorregido();
+        [t_d, emg_d, svm_d, spo2_d, bpm_d, anot_d] = descomprimirRingBufferCorregido();
         if isempty(t_d), return; end % Fallo en extracción
         
         try
@@ -357,9 +363,9 @@ function AVA_Core_System()
             if isfile(nameCSV), logSistema('WARN', 'Sobrescribiendo archivo existente.'); end
             
             % Procesamiento Clínico
-            [anotFinal, ~, ~] = procesarAASM(t_d, emg_d, svm_d, Config.Muestreo.Fs_Hz, Config);
+            [anotFinal, epi, ~] = procesarAASM(t_d, emg_d, svm_d, Config.Muestreo.Fs_Hz, Config);
             
-            % BUG #7 & VULN #2: Exportación robusta con FPRINTF estricto
+            % Exportación robusta con FPRINTF estricto
             logSistema('INFO', 'Iniciando escritura OOM-Safe de CSV...');
             fid = fopen(nameCSV, 'w');
             if fid < 0, logSistema('ERROR', 'Permiso denegado para CSV'); return; end
@@ -391,7 +397,7 @@ function AVA_Core_System()
     function ejecutarAnalisisPro()
         if Archivos.Senales == "", uialert(UI.Fig, 'Seleccione un CSV.', 'Aviso'); return; end
         try
-            % BUG #2: Lector OOM-Safe (Chunking Manual)
+            % Lector OOM-Safe (Chunking Manual)
             logSistema('INFO', 'Cargando archivo masivo por chunks...');
             [vT, vEMG, vSVM, vSPO2, vBPM] = leerCSVEnChunks(Archivos.Senales);
             
@@ -403,7 +409,7 @@ function AVA_Core_System()
             
             totPLM = 0; totSPI = 0;
             
-            % Interpolación Segura (Bug #4)
+            % Interpolación Segura
             if Archivos.Anotaciones ~= ""
                 if ~isfile(Archivos.Anotaciones), return; end
                 matA = readmatrix(Archivos.Anotaciones);
@@ -495,7 +501,7 @@ function AVA_Core_System()
     end
 
     function [vT, vE, vS, vSp, vB] = leerCSVEnChunks(archivo)
-        % BUG #2: Lectura incremental sin picos OOM
+        % Lectura incremental sin picos OOM
         chunkMuestras = 15000; % 5 mins a 50Hz
         vT=[]; vE=[]; vS=[]; vSp=[]; vB=[];
         
@@ -580,7 +586,7 @@ function AVA_Core_System()
     end
 
     function [t, e, s, sp, b, a] = descomprimirRingBufferCorregido()
-        % BUG #1: Descompresión Segura con Bounds Checking Exacto
+        % Descompresión Segura con Bounds Checking Exacto
         c = RingBuffer.Count;
         nMax = Config.BufferMax.Muestras;
         
@@ -608,7 +614,7 @@ function AVA_Core_System()
     end
 
     function backupIncrementalOptimizado(RB, ultimoIdx, nMax)
-        % BUG #6: Cómputo exacto de índices para chunking sin memory explode
+        % Cómputo exacto de índices para chunking sin memory explode
         if RB.Count == 0, return; end
         
         if RB.Idx > ultimoIdx
@@ -660,7 +666,7 @@ function AVA_Core_System()
     end
 
     function [s, b] = detectarBPMRobusto(bR, bI, fs)
-        % BUG #8: Algoritmo Seguro de Detección en Dominio Temporal (Sin xcorr)
+        % Algoritmo Seguro de Detección en Dominio Temporal (Sin xcorr)
         s = 95; b = 70; 
         
         bR_AC = bR - mean(bR); bI_AC = bI - mean(bI);
@@ -693,7 +699,7 @@ function AVA_Core_System()
     end
 
     function [anotFinal, mEpi, mPlm] = procesarAASM(t, e, s, fs, cfg)
-        % BUG #9: Blindaje Division por Cero
+        % Blindaje Division por Cero
         minE = cfg.Norm.EMG_Min; maxE = cfg.Norm.EMG_Max; rangeE = maxE - minE;
         if rangeE == 0, rangeE = 1; end
         en = (e - minE) / rangeE; en = max(0, min(1, en)); 
@@ -743,7 +749,7 @@ function AVA_Core_System()
         [n, r] = uigetfile({'*.csv;*.txt'});
         if ~isequal(n, 0)
             rutaFull = fullfile(r, n);
-            % VULN #1: Verificación de acceso permitido (Directorio de Documentos)
+            % Verificación de acceso permitido
             if ~isfile(rutaFull)
                 uialert(UI.Fig, 'Archivo no encontrado.', 'Error'); return; 
             end
@@ -754,7 +760,7 @@ function AVA_Core_System()
     end
 
     function actualizarEtiquetaEpisodio(idx, tEpi, tPlm, tSpi)
-        % BUG #11: Bounds y Error Handling seguro
+        % Bounds y Error Handling seguro
         if idx < 0 || idx > tEpi || tEpi < 0, idx = 0; tEpi = 0; end
         try
             UI.lblEpi.Text = sprintf('Episodio: %d / %d | Totales: %d PLMs | %d SPI', idx, tEpi, tPlm, tSpi);
@@ -802,7 +808,6 @@ function AVA_Core_System()
     end
 
     function logSistema(nivel, mensaje)
-        % BUG #7: Logger Asíncrono no bloqueante
         persistent t0
         if isempty(t0), t0 = datetime('now'); end
         try
@@ -811,3 +816,4 @@ function AVA_Core_System()
         catch
         end
     end
+end
