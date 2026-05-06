@@ -8,7 +8,7 @@
 ## ✨ Características Principales (V6.2)
 
 * **Monitoreo Multimodal de Grado Clínico:** Adquisición simultánea y sincronizada de Electromiografía tibial (EMG), Actigrafía (SVM), Frecuencia Cardíaca (BPM) y Saturación de Oxígeno (SpO2).
-* **Endurance & OOM-Safe:** El núcleo de MATLAB está optimizado mediante *Ring Buffers* y carga por *Chunks*, permitiendo grabar estudios polisomnográficos completos de **hasta 10 horas continuas (1.8 millones de muestras)** en computadoras estándar (mínimo 8GB RAM) sin riesgo de cuelgues o fugas de memoria.
+* **Endurance & OOM-Safe:** El núcleo de MATLAB está optimizado mediante *Ring Buffers* y carga por *Chunks*, permitiendo grabar estudios completos de **hasta 10 horas continuas (1.8 millones de muestras)** en computadoras estándar (mínimo 8GB RAM) sin riesgo de cuelgues o fugas de memoria.
 * **Telemetría Zero-Drift:** Sincronización de nodos de hardware mediante un acumulador de microsegundos (`micros()`) que garantiza un muestreo perfecto y libre de deriva a **50.00 Hz exactos** durante toda la noche.
 * **Procesamiento AASM en el Borde:** Sustitución de IA en la nube por un motor determinista ultrarrápido que aplica las reglas oficiales de la AASM para detectar y agrupar Movimientos Periódicos de las Extremidades (PLMS) y diagnosticar SPI.
 * **Exportación de Alta Precisión:** Generación automática de datasets universales en **CSV** (12 decimales de precisión médica) y reportes de anotaciones clínicas en **TXT** para validación médica o investigación (Ground Truth).
