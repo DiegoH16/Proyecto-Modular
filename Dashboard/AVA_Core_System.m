@@ -1,9 +1,4 @@
 function AVA_Core_System()
-    % =========================================================================
-    % PROYECTO: AVA Nexus V6.2 - MEDICAL GRADE RELEASE
-    % CARACTERÍSTICAS: OOM-Safe Chunking, Thread-Safe RingBuffer, Bounds
-    % Checking, Graceful Degradation, Precision Logging y AASM Robusto.
-    % =========================================================================
     
     clearvars; clc; close all force;
     
