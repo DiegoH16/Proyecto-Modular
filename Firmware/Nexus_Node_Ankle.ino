@@ -1,314 +1,185 @@
 /*
- * =========================================================================
- * DISPOSITIVO TOBILLO: Movimientos (MPU6050) + EMG (Muestreo Continuo)
- * Hardware: ESP32 + MPU6050 (I2C) + Sensor EMG (Pin Analógico 4)
- * =========================================================================
-  */
+ * DISPOSITIVO TOBILLO: MPU6050 + EMG
+ * V3.0 PRODUCTION: Sincronización robusta, filtros desacoplados, validación
+ * Envía: Tiempo_ms,Ax,Ay,Az,EMG,CRC16\n
+ */
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <time.h>              // Para SNTP
-#include <sys/time.h>
 
-// --- CONFIGURACIÓN WI-FI ---
-const char* ssid = "TU_SSID_AQUI"; 
-const char* password = "TU_PASSWORD_AQUI"; 
-const int MAX_REINTENTOS_WIFI = 20;
-const unsigned long TIMEOUT_WIFI_MS = 10000;
+// --- CONFIGURACIÓN ---
+const char* ssid = "TU_SSID_AQUI";
+const char* password = "TU_PASSWORD_AQUI";
+const char* ip_matlab = "192.168.100.30";
+const int puerto_datos = 8888;
+const int puerto_control = 9999;
 
-// --- CONFIGURACIÓN UDP ---
-const char* ip_computadora = "192.168.100.30";
-const int puerto_udp = 8888;
-const unsigned long TIMEOUT_UDP_MS = 3000;
-const int MAX_REINTENTOS_UDP = 3;
-
-// --- CONFIGURACIÓN SNTP (Sincronización temporal absoluta) ---
-const char* ntpServer = "pool.ntp.org";
-const long gmtOffset_sec = -6 * 3600;              // UTC-6 (Centro México)
-const int daylightOffset_sec = 0;
-
-WiFiUDP udp;
+WiFiUDP udp_datos, udp_control;
 Adafruit_MPU6050 mpu;
 
-// --- PINES Y CONSTANTES ---
-const int PIN_EMG = 4;                     // Pin ADC válido para el ESP32
-const int FRECUENCIA_MUESTREO_HZ = 50;      
-const unsigned long INTERVALO_MS = 1000 / FRECUENCIA_MUESTREO_HZ;  // 20 ms
+// --- PINES ---
+const int PIN_EMG = 4; // ADC1_CH3 en ESP32
 
-// --- VARIABLES DE FILTRADO (EMA) ---
-float axFiltro = 0, ayFiltro = 0, azFiltro = 0, emgFiltro = 0;
-const float ALPHA_IMU = 0.4;  
-const float ALPHA_EMG = 0.15; 
-bool primeraLectura = true;   
+// --- PARÁMETROS DE MUESTREO ---
+const int FRECUENCIA_HZ = 50;
+const unsigned long INTERVALO_MS = 1000 / FRECUENCIA_HZ; // 20ms
 
-// --- CONTROL DE TIEMPO ---
-unsigned long tiempoInicio = 0;
-unsigned long ultimoMuestreo = 0;
-unsigned long ultimoEnvioPaquete = 0;
-unsigned long ultimoLogDiagnostico = 0;
+// --- GESTIÓN DE TIEMPO ROBUSTO ---
+struct {
+  uint64_t ms_total = 0;
+  uint32_t ms_last = 0;
+  
+  uint64_t getTotalMs() {
+    uint32_t ms_now = millis();
+    if (ms_now < ms_last) ms_total += 4294967296ULL;
+    ms_last = ms_now;
+    return ms_total + ms_now;
+  }
+} timeManager;
 
-// --- OPTIMIZACIÓN DE ENVÍO (BATCHING) ---
-const int TAMANO_LOTE = 5; 
-const unsigned long TIMEOUT_LOTE_MS = 500;  // Envío forzado después de 500ms sin lote completo
-int contadorMuestras = 0;
-String payloadUDP = "";
-unsigned long tiempoInicioLote = 0;
+// --- FILTRADO SEPARADO ---
+// Nota: DLPF nativa en MPU6050 @ 21 Hz ya está activa
+// No aplicamos EMA adicional para evitar cascada de filtros
+struct {
+  float ax_last = 0, ay_last = 0, az_last = 0, emg_last = 0;
+  bool first_read = true;
+} filters;
 
-// --- ESTADÍSTICAS ---
-unsigned long contadorEnviosTotales = 0;
-unsigned long contadorMuestrasTotales = 0;
-unsigned long contadorErroresUDP = 0;
-unsigned long contadorDesconexiones = 0;
+// --- BATCHING ---
+const int TAMANO_LOTE = 5;
+int contador = 0;
+String payload = "";
+unsigned long ultimo_muestreo = 0;
 
-// --- PROTOTIPOS ---
-void sincronizarNTP();
-bool conectarWiFi();
-bool enviarPaqueteUDP();
-void logearDiagnosticos();
+// --- CRC16 ---
+uint16_t crc16(String data) {
+  uint16_t crc = 0xFFFF;
+  for (int i = 0; i < data.length(); i++) {
+    crc ^= (uint16_t)data[i];
+    for (int j = 0; j < 8; j++) {
+      if (crc & 0x0001) crc = (crc >> 1) ^ 0xA001;
+      else crc >>= 1;
+    }
+  }
+  return crc;
+}
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  Serial.println("\n\n========================================");
-  Serial.println("AVA NEXUS | ESP32 TOBILLO V3.0");
-  Serial.println("Medical Grade EMG + IMU Sensor Node");
-  Serial.println("========================================\n");
-
-  // --- Inicializar MPU6050 ---
-  Serial.println("[SETUP] Inicializando MPU6050...");
-  if (!mpu.begin()) {
-    Serial.println("[ERROR] MPU6050 NO DETECTADO. Revisa I2C (SDA=21, SCL=22)");
-    while (1) { delay(100); } 
+  WiFi.begin(ssid, password);
+  int intentos = 0;
+  while (WiFi.status() != WL_CONNECTED && intentos < 20) {
+    delay(500);
+    Serial.print(".");
+    intentos++;
   }
-  Serial.println("[OK] MPU6050 inicializado correctamente.");
-
-  // Configuración de Hardware
-  mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   
-  Serial.println("[OK] Configuración MPU6050 aplicada (Rango: ±4G, DLPF: 21 Hz).");
-  
-  analogReadResolution(12); 
-  Serial.println("[OK] Resolución ADC ESP32 configurada a 12 bits.");
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\n[ERROR] WiFi no conectado!");
+    ESP.restart();
+  }
+  Serial.println("\n[OK] WiFi Conectado!");
 
-  // Reservar memoria
-  payloadUDP.reserve(300);
-  Serial.println("[OK] Memoria preallocada para UDP batching.");
+  // Inicializar I2C y MPU6050
+  Wire.begin(21, 22);
+  Wire.setClock(400000); // MPU6050 soporta 400kHz
 
-  // --- Conectar WiFi ---
-  Serial.println("\n[SETUP] Conectando a WiFi...");
-  if (!conectarWiFi()) {
-    Serial.println("[ERROR] No se pudo conectar a WiFi. Reiniciando...");
-    delay(5000);
+  if (!mpu.begin()) {
+    Serial.println("[ERROR] MPU6050 no encontrado!");
+    delay(1000);
     ESP.restart();
   }
 
-  // --- Sincronizar NTP ---
-  Serial.println("\n[SETUP] Sincronizando hora (NTP)...");
-  sincronizarNTP();
-  
-  Serial.print("[OK] Hora sincronizada: ");
-  time_t ahora = time(nullptr);
-  Serial.println(ctime(&ahora));
+  mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
+  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ); // DLPF nativa
 
-  tiempoInicio = millis();
-  tiempoInicioLote = tiempoInicio;
-  ultimoLogDiagnostico = tiempoInicio;
+  analogReadResolution(12);
+  payload.reserve(300);
 
-  Serial.println("\n[INFO] Sistema listo. Iniciando captura a 50 Hz...\n");
+  ultimo_muestreo = millis();
+
+  // Enviar SYNC a MATLAB
+  delay(500);
+  udp_control.beginPacket(ip_matlab, puerto_control);
+  udp_control.print("SYNC,TOBILLO,");
+  udp_control.print(timeManager.getTotalMs());
+  udp_control.print("\n");
+  udp_control.endPacket();
+  Serial.println("[OK] SYNC enviado a MATLAB");
 }
 
 void loop() {
   unsigned long t_actual = millis();
 
-  // --- RECONEXIÓN WIFI AUTOMÁTICA ---
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[WARN] WiFi desconectado. Intentando reconectar...");
-    contadorDesconexiones++;
-    conectarWiFi();
-  }
-
-  // --- MUESTREO ESTRICTO A 50 Hz ---
-  if (t_actual - ultimoMuestreo >= INTERVALO_MS) {
-    ultimoMuestreo = t_actual;
+  if (t_actual - ultimo_muestreo >= INTERVALO_MS) {
+    ultimo_muestreo = t_actual;
 
     sensors_event_t a, g, temp;
-    
-    // Validación: lectura fallida del MPU6050
-    if (!mpu.getEvent(&a, &g, &temp)) {
-      Serial.println("[ERROR] Fallo en lectura de MPU6050. Saltando muestra.");
-      return;
-    }
-    
-    int emgCrudo = analogRead(PIN_EMG);
+    mpu.getEvent(&a, &g, &temp);
 
-    // --- VALIDACIÓN DE RANGOS FÍSICOS ---
-    if (abs(a.acceleration.x) >= 40.0 || abs(a.acceleration.y) >= 40.0 || abs(a.acceleration.z) >= 40.0) {
-      Serial.printf("[WARN] Aceleración fuera de rango: [%.2f, %.2f, %.2f] m/s². Saltando.\n", 
-                    a.acceleration.x, a.acceleration.y, a.acceleration.z);
+    float ax = a.acceleration.x;
+    float ay = a.acceleration.y;
+    float az = a.acceleration.z;
+    int emg_raw = analogRead(PIN_EMG);
+
+    // Compuerta de aceleración (rechazar spikes)
+    if (abs(ax) > 40.0 || abs(ay) > 40.0 || abs(az) > 40.0) {
+      Serial.println("[WARN] Aceleración fuera de rango detectada");
       return;
     }
 
-    // EMG válido: 0-4095 (12-bit)
-    if (emgCrudo < 0 || emgCrudo > 4095) {
-      Serial.printf("[WARN] EMG fuera de rango: %d. Saltando.\n", emgCrudo);
-      return;
+    // Inicializar filtros
+    if (filters.first_read) {
+      filters.ax_last = ax;
+      filters.ay_last = ay;
+      filters.az_last = az;
+      filters.emg_last = emg_raw;
+      filters.first_read = false;
+      return; // Saltar la primera muestra
     }
 
-    // --- APLICACIÓN DE FILTROS EMA ---
-    if (primeraLectura) {
-      axFiltro = a.acceleration.x;
-      ayFiltro = a.acceleration.y;
-      azFiltro = a.acceleration.z;
-      emgFiltro = emgCrudo;
-      primeraLectura = false;
-      Serial.println("[OK] Valores iniciales de filtros establecidos.");
-    } else {
-      axFiltro = (ALPHA_IMU * a.acceleration.x) + ((1.0 - ALPHA_IMU) * axFiltro);
-      ayFiltro = (ALPHA_IMU * a.acceleration.y) + ((1.0 - ALPHA_IMU) * ayFiltro);
-      azFiltro = (ALPHA_IMU * a.acceleration.z) + ((1.0 - ALPHA_IMU) * azFiltro);
-      emgFiltro = (ALPHA_EMG * emgCrudo) + ((1.0 - ALPHA_EMG) * emgFiltro);
-    }
+    // NO aplicar EMA adicional - confiar en DLPF del MPU6050
+    // Los datos ya están filtrados a 21 Hz
 
-    // --- CONSTRUCCIÓN DE LÍNEA DE DATOS ---
-    payloadUDP += String(t_actual - tiempoInicio) + ",";
-    payloadUDP += String(axFiltro, 2) + ",";
-    payloadUDP += String(ayFiltro, 2) + ",";
-    payloadUDP += String(azFiltro, 2) + ",";
-    payloadUDP += String((int)emgFiltro) + "\n";
+    uint64_t t_ms = timeManager.getTotalMs();
+    String linea = String(t_ms) + "," + 
+                   String(ax, 2) + "," + 
+                   String(ay, 2) + "," + 
+                   String(az, 2) + "," + 
+                   String(emg_raw);
+    String linea_con_crc = linea + "," + String(crc16(linea), HEX) + "\n";
     
-    contadorMuestras++;
-    contadorMuestrasTotales++;
+    payload += linea_con_crc;
+    contador++;
 
-    // --- LÓGICA DE ENVÍO BATCHING ---
-    bool enviarAhora = false;
+    if (contador >= TAMANO_LOTE) {
+      udp_datos.beginPacket(ip_matlab, puerto_datos);
+      udp_datos.print(payload);
+      udp_datos.endPacket();
 
-    // Condición 1: Lote completo
-    if (contadorMuestras >= TAMANO_LOTE) {
-      enviarAhora = true;
-    }
-    // Condición 2: Timeout de lote (500 ms sin completar)
-    else if ((t_actual - tiempoInicioLote) >= TIMEOUT_LOTE_MS && contadorMuestras > 0) {
-      Serial.printf("[INFO] Timeout de lote (%lu ms). Enviando %d muestras.\n", 
-                    TIMEOUT_LOTE_MS, contadorMuestras);
-      enviarAhora = true;
+      payload = "";
+      contador = 0;
     }
 
-    if (enviarAhora) {
-      if (enviarPaqueteUDP()) {
-        contadorEnviosTotales++;
-        ultimoEnvioPaquete = t_actual;
+    // Verificación de salud I2C cada 100 muestras
+    static int health_check = 0;
+    if (++health_check >= 100) {
+      Wire.beginTransmission(0x68); // Dirección MPU6050
+      if (Wire.endTransmission() != 0) {
+        Serial.println("[WARN] I2C check failed!");
+        udp_control.beginPacket(ip_matlab, puerto_control);
+        udp_control.print("ERROR,I2C_LOST\n");
+        udp_control.endPacket();
+        if (!mpu.begin()) ESP.restart();
       }
-      payloadUDP = "";
-      contadorMuestras = 0;
-      tiempoInicioLote = t_actual;
+      health_check = 0;
     }
   }
 
-  // --- LOGGING DE DIAGNÓSTICO CADA 10 SEGUNDOS ---
-  if (millis() - ultimoLogDiagnostico >= 10000) {
-    logearDiagnosticos();
-    ultimoLogDiagnostico = millis();
-  }
-
-  yield(); // Permitir que el watchdog y otras tareas se ejecuten
+  delay(1); // Yield
 }
-
-// --- FUNCIÓN: Conectar a WiFi con reintentos ---
-bool conectarWiFi() {
-  int intentos = 0;
-  WiFi.begin(ssid, password);
-  
-  while (WiFi.status() != WL_CONNECTED && intentos < MAX_REINTENTOS_WIFI) {
-    delay(500);
-    Serial.print(".");
-    intentos++;
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n[OK] WiFi conectado!");
-    Serial.print("    IP: "); Serial.println(WiFi.localIP());
-    Serial.print("    RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
-    return true;
-  } else {
-    Serial.println("\n[ERROR] No se pudo conectar a WiFi tras " + String(MAX_REINTENTOS_WIFI) + " intentos.");
-    return false;
-  }
-}
-
-// --- FUNCIÓN: Sincronizar hora mediante NTP ---
-void sincronizarNTP() {
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  
-  Serial.print("[INFO] Esperando sincronización NTP ");
-  time_t ahora = time(nullptr);
-  int intentos = 0;
-  
-  while (ahora < 24 * 3600 && intentos < 20) {
-    delay(500);
-    Serial.print(".");
-    ahora = time(nullptr);
-    intentos++;
-  }
-  
-  Serial.println();
-  if (ahora > 24 * 3600) {
-    Serial.println("[OK] NTP sincronizado exitosamente.");
-  } else {
-    Serial.println("[WARN] NTP no respondió, usando reloj local.");
-  }
-}
-
-// --- FUNCIÓN: Enviar paquete UDP con reintentos ---
-bool enviarPaqueteUDP() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[WARN] WiFi no conectado. No se puede enviar UDP.");
-    contadorErroresUDP++;
-    return false;
-  }
-
-  int intentos = 0;
-  while (intentos < MAX_REINTENTOS_UDP) {
-    try {
-      udp.beginPacket(ip_computadora, puerto_udp);
-      size_t bytesEscritos = udp.print(payloadUDP);
-      
-      if (udp.endPacket()) {
-        // Éxito
-        return true;
-      } else {
-        Serial.printf("[WARN] endPacket() falló en intento %d/%d\n", intentos + 1, MAX_REINTENTOS_UDP);
-        intentos++;
-        delay(10);
-      }
-    } catch (...) {
-      Serial.printf("[ERROR] Excepción UDP en intento %d/%d\n", intentos + 1, MAX_REINTENTOS_UDP);
-      intentos++;
-      delay(10);
-    }
-  }
-  
-  Serial.println("[ERROR] No se pudo enviar paquete UDP después de " + String(MAX_REINTENTOS_UDP) + " intentos.");
-  contadorErroresUDP++;
-  return false;
-}
-
-// --- FUNCIÓN: Logging de diagnósticos ---
-void logearDiagnosticos() {
-  Serial.println("\n========== DIAGNÓSTICO (10 seg) ==========");
-  Serial.printf("Muestras totales:    %lu\n", contadorMuestrasTotales);
-  Serial.printf("Paquetes enviados:   %lu\n", contadorEnviosTotales);
-  Serial.printf("Errores UDP:         %lu\n", contadorErroresUDP);
-  Serial.printf("Desconexiones WiFi:  %lu\n", contadorDesconexiones);
-  Serial.printf("Frecuencia efectiva: %.1f Hz\n", (float)contadorMuestrasTotales / 10.0);
-  Serial.printf("WiFi RSSI:           %d dBm\n", WiFi.RSSI());
-  
-  time_t ahora = time(nullptr);
-  Serial.printf("Hora del sistema:    %s\n", ctime(&ahora));
-  Serial.println("==========================================\n");
-}
-
