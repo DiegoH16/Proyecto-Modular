@@ -12,6 +12,7 @@ function AVA_Core_System()
     Config = struct();
     Config.Puertos.Tobillo = 8888; 
     Config.Puertos.Biceps  = 8889; 
+    Config.Puertos.Control = 9999; % ✅ NUEVO: Puerto para mensajes SYNC
     Config.Muestreo.Fs_Hz  = 50; 
     Config.Muestreo.VentanaGrafica_s = 60; 
     
@@ -19,10 +20,9 @@ function AVA_Core_System()
     Config.BufferMax.Horas = 10;
     Config.BufferMax.Muestras = Config.Muestreo.Fs_Hz * 3600 * Config.BufferMax.Horas; 
     
-    Config.UI.RefrescoGraficas_Muestras = 5; % 10 FPS
+    Config.UI.RefrescoGraficas_Muestras = 5; 
     Config.Backup.MuestrasIntervalo = Config.Muestreo.Fs_Hz * 300;
     
-    % Umbrales 
     Config.Umbrales.IR_Minimo_Dedo = 3000;
     Config.Umbrales.EMG_Contraccion = 150; 
     Config.Umbrales.SVM_Movimiento = 0.4;  
@@ -42,18 +42,21 @@ function AVA_Core_System()
     
     Estado = struct();
     Estado.Capturando = false;
-    Estado.T0_Unix = -1; % Sincronización absoluta
+    
+    % ✅ NUEVO: Variables para Sincronización Real
+    Estado.OffsetTobillo = NaN;
+    Estado.OffsetBiceps = NaN;
+    Estado.T0_Global = -1; 
+    
     Estado.DedoDetectado = false; 
     Estado.UltimoBackupIdx = 1;
     
-    % --- BASE EMG PROMEDIO ---
     Estado.EMG_Promedio = 0;
     Estado.EMG_Muestras = 0;
     Estado.Filtros.SVM_Base = 1;    
     
     Estado.Vitales.SPO2 = 98;
     Estado.Vitales.BPM = 70;
-    % Buffer robusto de 30 segundos (1500 muestras @ 50Hz)
     Estado.Vitales.BufferRed = zeros(1, Config.Muestreo.Fs_Hz * 30); 
     Estado.Vitales.BufferIR  = zeros(1, Config.Muestreo.Fs_Hz * 30);
     
@@ -63,18 +66,16 @@ function AVA_Core_System()
     Estado.UI.SPO2Text = '';
     Estado.UI.BPMText = '';
     
-    BufferGrafica = struct('T', zeros(1, 300), 'EMG', zeros(1, 300), 'SVM', zeros(1, 300), 'Idx', 1, 'Count', 0);
-    
     Analisis = struct('T', [], 'Anotaciones', [], 'EventosPLM', [], 'IdxNav', 0, 'TotPLM', 0, 'TotEpisodios', 0);
     Archivos = struct('Senales', "", 'Anotaciones', "");
-    Red = struct('UdpTobillo', [], 'UdpBiceps', []);
+    Red = struct('UdpTobillo', [], 'UdpBiceps', [], 'UdpControl', []);
     
     limpiezaCierre = onCleanup(@() liberarRecursos(Red));
     
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
-    logSistema('INFO', 'Iniciando AVA Nexus V6.6 | Optimizado (Preallocation & Flags)');
+    logSistema('INFO', 'Iniciando AVA Nexus V6.7 | Sync & DSP Optimization');
     UI = struct();
-    UI.Fig = uifigure('Name', 'AVA Nexus V6.6 | Medical Edition', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
+    UI.Fig = uifigure('Name', 'AVA Nexus V6.7 | Medical Edition', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @(src, event) cerrarAplicacion(src, event);
     UI.AxesAnaLista = [];
     
@@ -82,7 +83,7 @@ function AVA_Core_System()
     UI.PnlAdq  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     UI.PnlAna  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     
-    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V6.6', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
+    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V6.7', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
     uibutton(UI.PnlMenu, 'Text', '1. Adquisición de Datos (UDP)', 'FontSize', 18, 'Position', [400, 450, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAdq));
     uibutton(UI.PnlMenu, 'Text', '2. Analizador Clínico (SPI)', 'FontSize', 18, 'Position', [400, 350, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAna));
     
@@ -92,6 +93,7 @@ function AVA_Core_System()
     UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 3];
     
     numPuntosGrafica = 3000;
+    % ✅ MEJORA: Uso directo de animatedline sin buffer intermedio
     UI.lineaEMG = animatedline(UI.axEMG_TR, 'Color', [1 0.5 0], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     UI.lineaSVM = animatedline(UI.axSVM_TR, 'Color', [0 0.4 1], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     
@@ -114,9 +116,14 @@ function AVA_Core_System()
     btnExp.Layout.Row = 6; btnExp.Layout.Column = 3;
     
     gAna = uigridlayout(UI.PnlAna, [2, 1], 'RowHeight', {45, '1x'}, 'Padding', 5);
-    gToolbar = uigridlayout(gAna, [1, 9], 'ColumnWidth', {120, 40, 80, 80, 60, '1x', 140, 80, 80}, 'Padding', 2);
+    gToolbar = uigridlayout(gAna, [1, 10], 'ColumnWidth', {120, 120, 120, 40, 80, 80, 60, '1x', 140, 80}, 'Padding', 2);
     
     uibutton(gToolbar, 'Text', '📁 Cargar CSV', 'FontSize', 12, 'ButtonPushedFcn', @(src, event) cargarArchivo('DATOS'));
+    uibutton(gToolbar, 'Text', '📝 Cargar TXT', 'FontSize', 12, 'ButtonPushedFcn', @(src, event) cargarArchivo('ANOT'));
+    
+    % ✅ MEJORA: Restaurada la etiqueta de archivo perdida
+    UI.lblArchivoData = uilabel(gToolbar, 'Text', '...', 'FontSize', 9, 'FontColor', [0.4 0.4 0.4], 'WordWrap', 'off');
+    
     uilabel(gToolbar, 'Text', '|', 'HorizontalAlignment', 'center');
     uibutton(gToolbar, 'Text', '<< Ant', 'FontSize', 12, 'ButtonPushedFcn', @(src, event) navegarEpisodios(-1));
     uibutton(gToolbar, 'Text', 'Sig >>', 'FontSize', 12, 'ButtonPushedFcn', @(src, event) navegarEpisodios(1));
@@ -133,41 +140,77 @@ function AVA_Core_System()
         try
             if Estado.Capturando 
                 
-                % 1. LEER BUFFERS (BATCHING) - Parametrizado con 'true' para fusionar el tiempo
-                lineasB = leerYValidarBatch(Red.UdpBiceps, 5, true); % UNIX_S, UNIX_US, R, IR, CRC
-                lineasT = leerYValidarBatch(Red.UdpTobillo, 7, true); % UNIX_S, UNIX_US, Ax, Ay, Az, EMG, CRC
-                
-                % 2. SINCRONIZACIÓN T0_UNIX ABSOLUTA Y ROBUSTA
-                if Estado.T0_Unix == -1
-                    t0_b = inf; t0_t = inf;
-                    if ~isempty(lineasB), t0_b = lineasB(1,1); end
-                    if ~isempty(lineasT), t0_t = lineasT(1,1); end
-                    
-                    if min(t0_b, t0_t) ~= inf
-                        Estado.T0_Unix = min(t0_b, t0_t);
-                        logSistema('INFO', ['T0 Global Sincronizado: ', num2str(Estado.T0_Unix, '%.6f')]);
+                % ✅ 1. LEER PUERTO DE CONTROL (SYNC)
+                if isvalid(Red.UdpControl) && Red.UdpControl.NumDatagramsAvailable > 0
+                    paquetesSync = read(Red.UdpControl, Red.UdpControl.NumDatagramsAvailable);
+                    for ps = 1:length(paquetesSync)
+                        txt = char(paquetesSync(ps).Data);
+                        partes = strsplit(strtrim(txt), ',');
+                        if length(partes) >= 4 && strcmp(partes{1}, 'SYNC')
+                            devTime = str2double(partes{3}) + (str2double(partes{4}) / 1e6);
+                            localTime = posixtime(datetime('now')); % Tiempo UTC de la PC
+                            
+                            if strcmp(partes{2}, 'TOBILLO') && isnan(Estado.OffsetTobillo)
+                                Estado.OffsetTobillo = localTime - devTime;
+                                logSistema('INFO', sprintf('Offset Tobillo fijado: %.4f s', Estado.OffsetTobillo));
+                            elseif strcmp(partes{2}, 'BICEPS') && isnan(Estado.OffsetBiceps)
+                                Estado.OffsetBiceps = localTime - devTime;
+                                logSistema('INFO', sprintf('Offset Bíceps fijado: %.4f s', Estado.OffsetBiceps));
+                            end
+                        end
                     end
                 end
 
-                % 3. PROCESAR BÍCEPS
-                if ~isempty(lineasB) && Estado.T0_Unix ~= -1
+                % 2. LEER BUFFERS DE DATOS
+                lineasB = leerYValidarBatch(Red.UdpBiceps, 5, true); 
+                lineasT = leerYValidarBatch(Red.UdpTobillo, 7, true); 
+                
+                % ✅ 3. APLICAR OFFSETS A LOS TIEMPOS
+                if ~isempty(lineasB)
+                    if isnan(Estado.OffsetBiceps) % Fallback si el SYNC se perdió
+                        Estado.OffsetBiceps = posixtime(datetime('now')) - lineasB(1,1);
+                        logSistema('INFO', 'Offset Bíceps estimado por fallback.');
+                    end
+                    lineasB(:,1) = lineasB(:,1) + Estado.OffsetBiceps;
+                end
+                
+                if ~isempty(lineasT)
+                    if isnan(Estado.OffsetTobillo) % Fallback
+                        Estado.OffsetTobillo = posixtime(datetime('now')) - lineasT(1,1);
+                        logSistema('INFO', 'Offset Tobillo estimado por fallback.');
+                    end
+                    lineasT(:,1) = lineasT(:,1) + Estado.OffsetTobillo;
+                end
+                
+                % 4. ESTABLECER TIEMPO CERO GLOBAL DE LA GRÁFICA
+                if Estado.T0_Global == -1
+                    t0s = [];
+                    if ~isempty(lineasB), t0s = [t0s, lineasB(1,1)]; end
+                    if ~isempty(lineasT), t0s = [t0s, lineasT(1,1)]; end
+                    
+                    if ~isempty(t0s)
+                        Estado.T0_Global = min(t0s);
+                        logSistema('INFO', ['T0 de captura iniciado: ', num2str(Estado.T0_Global, '%.4f')]);
+                    end
+                end
+
+                % 5. PROCESAR BÍCEPS
+                if ~isempty(lineasB) && Estado.T0_Global ~= -1
                     for i = 1:size(lineasB, 1)
                         datosB = lineasB(i,:);
-                        if datosB(1) < Estado.T0_Unix, continue; end % Descartar paquetes del pasado
-                        
                         Estado.Vitales.BufferRed = [Estado.Vitales.BufferRed(2:end), datosB(2)]; 
                         Estado.Vitales.BufferIR  = [Estado.Vitales.BufferIR(2:end), datosB(3)];
                         Estado.DedoDetectado = (datosB(3) > Config.Umbrales.IR_Minimo_Dedo);
                     end
                 end
 
-                % 4. PROCESAR TOBILLO
-                if ~isempty(lineasT) && Estado.T0_Unix ~= -1
+                % 6. PROCESAR TOBILLO
+                if ~isempty(lineasT) && Estado.T0_Global ~= -1
                     for i = 1:size(lineasT, 1)
                         datosT = lineasT(i,:);
-                        if datosT(1) < Estado.T0_Unix, continue; end
                         
-                        tRelativo = datosT(1) - Estado.T0_Unix;
+                        tRelativo = datosT(1) - Estado.T0_Global;
+                        if tRelativo < 0, continue; end % Ignorar paquetes desfasados
                         
                         % EMG y Promedio
                         emg = datosT(5);
@@ -182,13 +225,9 @@ function AVA_Core_System()
                         
                         contraccionActual = (salto > Config.Umbrales.EMG_Contraccion) && (svmAC > Config.Umbrales.SVM_Movimiento);
                         
-                        % Interfaz Gráfica (Refresco controlado)
-                        BufferGrafica.T(BufferGrafica.Idx) = tRelativo;
-                        BufferGrafica.EMG(BufferGrafica.Idx) = salto;
-                        BufferGrafica.SVM(BufferGrafica.Idx) = svm;
-                        
-                        BufferGrafica.Idx = mod(BufferGrafica.Idx, 300) + 1;
-                        BufferGrafica.Count = min(BufferGrafica.Count + 1, 300);
+                        % ✅ MEJORA: Gráfica eficiente y directa
+                        addpoints(UI.lineaEMG, tRelativo, salto);
+                        addpoints(UI.lineaSVM, tRelativo, svm);
                         
                         if mod(Estado.UI.MuestrasRecibidas, Config.UI.RefrescoGraficas_Muestras) == 0
                             if contraccionActual ~= Estado.UI.ContraccionPrevia
@@ -199,13 +238,7 @@ function AVA_Core_System()
                                 end
                                 Estado.UI.ContraccionPrevia = contraccionActual;
                             end
-                            
-                            if BufferGrafica.Idx > 1
-                                addpoints(UI.lineaEMG, BufferGrafica.T(1:BufferGrafica.Idx-1), BufferGrafica.EMG(1:BufferGrafica.Idx-1));
-                                addpoints(UI.lineaSVM, BufferGrafica.T(1:BufferGrafica.Idx-1), BufferGrafica.SVM(1:BufferGrafica.Idx-1));
-                                actualizarEjesGrafica([UI.axEMG_TR, UI.axSVM_TR], tRelativo, Config.Muestreo.VentanaGrafica_s);
-                                BufferGrafica.Idx = 1; 
-                            end
+                            actualizarEjesGrafica([UI.axEMG_TR, UI.axSVM_TR], tRelativo, Config.Muestreo.VentanaGrafica_s);
                         end
                         
                         % Vitales UI Update
@@ -239,7 +272,8 @@ function AVA_Core_System()
                             Estado.UI.MuestrasDesdeUltimoBackup = 0;
                         end
                         
-                        guardarEnRingBuffer(tRelativo, salto, svm, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
+                        % Guardado seguro con tiempo UTC absoluto real
+                        guardarEnRingBuffer(datosT(1), salto, svm, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
                         Estado.UI.MuestrasRecibidas = Estado.UI.MuestrasRecibidas + 1;
                     end
                 end
@@ -256,7 +290,10 @@ function AVA_Core_System()
     function alternarCaptura()
         Estado.Capturando = ~Estado.Capturando;
         if Estado.Capturando
-            Estado.T0_Unix = -1;
+            Estado.OffsetTobillo = NaN;
+            Estado.OffsetBiceps = NaN;
+            Estado.T0_Global = -1;
+            
             Estado.PrimeraTramaTobillo = false; Estado.PrimeraTramaBiceps = false;
             Estado.Filtros.PPG_Base = 0; 
             Estado.UI.ContraccionPrevia = false; Estado.UI.MuestrasRecibidas = 0;
@@ -268,6 +305,15 @@ function AVA_Core_System()
             
             Analisis.T = []; Analisis.Anotaciones = []; Analisis.EventosPLM = []; Analisis.IdxNav = 0;
             
+            % ✅ MEJORA: Apertura segura del puerto de Control (SYNC)
+            try
+                Red.UdpControl = udpport("datagram", "LocalPort", Config.Puertos.Control);
+                Red.UdpControl.Timeout = 0.1;
+                logSistema('INFO', 'Puerto de Control 9999 (SYNC) abierto.');
+            catch ME
+                logSistema('WARN', ['No se pudo abrir el puerto 9999: ', ME.message]);
+            end
+
             try 
                 Red.UdpTobillo = udpport("datagram", "LocalPort", Config.Puertos.Tobillo);
                 Red.UdpTobillo.Timeout = 0.5;
@@ -282,7 +328,7 @@ function AVA_Core_System()
                 Red.UdpBiceps.Timeout = 0.5;
                 logSistema('INFO', 'Puerto UDP Bíceps abierto.');
             catch ME
-                clear Red.UdpTobillo; 
+                clear Red.UdpTobillo; clear Red.UdpControl;
                 uialert(UI.Fig, ['Error Bíceps: ', ME.message], 'Error UDP'); 
                 Estado.Capturando = false; return;
             end
@@ -324,10 +370,10 @@ function AVA_Core_System()
             fid = fopen(nameCSV, 'w');
             if fid < 0, logSistema('ERROR', 'Permiso denegado para CSV'); return; end
             
-            fprintf(fid, '# AVA Nexus V6.6 Estudio Polisomnográfico\n');
+            fprintf(fid, '# AVA Nexus V6.7 Estudio Polisomnográfico\n');
             fprintf(fid, '# Exportado: %s\n', char(datetime('now')));
             fprintf(fid, '# Duración: %.2f horas\n', (t_d(end) - t_d(1)) / 3600);
-            fprintf(fid, 'Time_s,EMG_uV,SVM_m_s2,SpO2_pct,BPM_bpm,AASM_SPI\n');
+            fprintf(fid, 'Time_s_UTC,EMG_uV,SVM_m_s2,SpO2_pct,BPM_bpm,AASM_SPI\n');
             
             for i = 1:length(t_d)
                 fprintf(fid, '%.6f,%.6f,%.6f,%d,%d,%d\n', t_d(i), emg_d(i), svm_d(i), round(spo2_d(i)), round(bpm_d(i)), anotFinal(i));
@@ -335,7 +381,7 @@ function AVA_Core_System()
             fclose(fid);
             
             fidTxt = fopen(nameTXT, 'w');
-            fprintf(fidTxt, 'Tiempo_s,Anot_SPI\n');
+            fprintf(fidTxt, 'Tiempo_s_UTC,Anot_SPI\n');
             for i = 1:length(t_d), fprintf(fidTxt, '%.6f,%d\n', t_d(i), anotFinal(i)); end
             fclose(fidTxt);
             
@@ -408,19 +454,17 @@ function AVA_Core_System()
     
     function dataOut = leerYValidarBatch(puerto, expectedCols, fusionarTiempo)
         dataOut = [];
-        % Validación segura de la existencia y apertura del puerto
         if isempty(puerto) || ~isvalid(puerto) || puerto.NumDatagramsAvailable == 0
             return; 
         end
         
         try
-            numPaquetes = min(puerto.NumDatagramsAvailable, 50); % Límite anti-flood
+            numPaquetes = min(puerto.NumDatagramsAvailable, 50); 
             paquetes = read(puerto, numPaquetes); 
         catch
             return;
         end
         
-        % 1. Prealocación de memoria basada en el máximo teórico (asumiendo ~5 líneas por paquete)
         columnasSalida = expectedCols;
         if fusionarTiempo
             columnasSalida = expectedCols - 1;
@@ -454,23 +498,19 @@ function AVA_Core_System()
                     continue;
                 end
                 
-                % 2. Fusión de Tiempo Parametrizada y segura
                 if fusionarTiempo && length(nums) >= 2
                     nums = [nums(1) + (nums(2) / 1e6), nums(3:end)];
                 end
                 
-                % 3. Almacenar en la matriz prealocada
                 indiceValido = indiceValido + 1;
                 if indiceValido <= size(matrizTemporal, 1)
                     matrizTemporal(indiceValido, :) = nums;
                 else
-                    % Crecimiento dinámico solo como red de seguridad (edge case)
                     matrizTemporal = [matrizTemporal; nums]; %#ok<AGROW> 
                 end
             end
         end
         
-        % 4. Recorte de la matriz prealocada al tamaño real
         if indiceValido > 0
             dataOut = matrizTemporal(1:indiceValido, :);
         end
@@ -493,13 +533,18 @@ function AVA_Core_System()
     end
 
     function mostrarMemoriaSegura()
-        try
-            mem = memory();
-            memMB = mem.MemUsedMATLAB / 1024^2;
-            pct = 100 * mem.MemUsedMATLAB / (mem.MemUsedMATLAB + mem.MemAvailableAllArrays);
-            UI.lblMemoria.Text = sprintf('RAM: %.0f MB (%.1f%%)', memMB, pct);
-        catch
-            UI.lblMemoria.Text = 'RAM: N/A';
+        % ✅ MEJORA: Validación multiplataforma para memory()
+        if ispc
+            try
+                mem = memory();
+                memMB = mem.MemUsedMATLAB / 1024^2;
+                pct = 100 * mem.MemUsedMATLAB / (mem.MemUsedMATLAB + mem.MemAvailableAllArrays);
+                UI.lblMemoria.Text = sprintf('RAM: %.0f MB (%.1f%%)', memMB, pct);
+            catch
+                UI.lblMemoria.Text = 'RAM: N/A';
+            end
+        else
+            UI.lblMemoria.Text = 'RAM: N/A (UNIX)';
         end
     end
 
@@ -752,6 +797,7 @@ function AVA_Core_System()
     end
 
     function liberarRecursos(R)
+        if isfield(R, 'UdpControl') && ~isempty(R.UdpControl) && isvalid(R.UdpControl), clear R.UdpControl; end
         if isfield(R, 'UdpTobillo') && ~isempty(R.UdpTobillo) && isvalid(R.UdpTobillo), clear R.UdpTobillo; end
         if isfield(R, 'UdpBiceps') && ~isempty(R.UdpBiceps) && isvalid(R.UdpBiceps), clear R.UdpBiceps; end
         logSistema('INFO', 'CleanUp exitoso.');
