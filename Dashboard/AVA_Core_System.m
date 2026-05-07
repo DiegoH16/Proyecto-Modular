@@ -13,22 +13,26 @@ function AVA_Core_System()
     Config.Puertos.Tobillo = 8888; 
     Config.Puertos.Biceps  = 8889; 
     Config.Puertos.Control = 9999; 
-    Config.Muestreo.Fs_Hz  = 50; 
+    
+    % ✅ ACTUALIZACIÓN: Sistema unificado a 100 Hz
+    Config.Muestreo.Fs_Hz  = 100; 
     Config.Muestreo.VentanaGrafica_s = 60; 
     
     Config.BufferMax.Horas = 10;
     Config.BufferMax.Muestras = Config.Muestreo.Fs_Hz * 3600 * Config.BufferMax.Horas; 
-    Config.UI.RefrescoGraficas_Muestras = 5; 
+    
+    % Refresco cada 10 muestras (10 FPS a 100Hz)
+    Config.UI.RefrescoGraficas_Muestras = 10; 
     Config.Backup.MuestrasIntervalo = Config.Muestreo.Fs_Hz * 300;
     
     Config.Umbrales.IR_Minimo_Dedo = 3000;
-    Config.Umbrales.EMG_Contraccion = 50; % Reducido porque la envolvente RMS es más pequeña y limpia
+    Config.Umbrales.EMG_Contraccion = 50; 
     Config.Umbrales.SVM_Movimiento = 0.4;  
     
     % Constantes para Filtros IIR DSP
-    Config.Filtros.Alpha_SVM = 0.005; % Pasa-altos muy lento para gravedad
-    Config.Filtros.Alpha_EMG_HP = 0.1; % Pasa-altos para EMG (elimina deriva)
-    Config.Filtros.Alpha_EMG_LP = 0.15; % Pasa-bajos para Envolvente (suavizado)
+    Config.Filtros.Alpha_SVM = 0.005; 
+    Config.Filtros.Alpha_EMG_HP = 0.05; % Ajustado para 100Hz (elimina DC del AD8232)
+    Config.Filtros.Alpha_EMG_LP = 0.1;  % Suavizado de Envolvente
     
     %% --- 2. ESTADO GLOBAL Y RING BUFFER ---
     RingBuffer = struct();
@@ -50,13 +54,13 @@ function AVA_Core_System()
     Estado.DedoDetectado = false; 
     Estado.UltimoBackupIdx = 1;
     
-    % --- DSP STATE ---
     Estado.DSP.EMG_Baseline = 0;
     Estado.DSP.EMG_Envelope = 0;
     Estado.DSP.SVM_Baseline = 1.0;    
     
     Estado.Vitales.SPO2 = 98;
     Estado.Vitales.BPM = 70;
+    % Buffer robusto de 30 segundos (3000 muestras @ 100Hz)
     Estado.Vitales.BufferRed = zeros(1, Config.Muestreo.Fs_Hz * 30); 
     Estado.Vitales.BufferIR  = zeros(1, Config.Muestreo.Fs_Hz * 30);
     
@@ -73,9 +77,9 @@ function AVA_Core_System()
     limpiezaCierre = onCleanup(@() liberarRecursos(Red));
     
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
-    logSistema('INFO', 'Iniciando AVA Nexus V6.8 | Medical DSP Active');
+    logSistema('INFO', 'Iniciando AVA Nexus V7.0 | 100Hz & AD8232 DSP');
     UI = struct();
-    UI.Fig = uifigure('Name', 'AVA Nexus V6.8 | DSP Edition', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
+    UI.Fig = uifigure('Name', 'AVA Nexus V7.0 | Advanced PSG Edition', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @(src, event) cerrarAplicacion(src, event);
     UI.AxesAnaLista = [];
     
@@ -83,16 +87,16 @@ function AVA_Core_System()
     UI.PnlAdq  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     UI.PnlAna  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     
-    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V6.8', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
+    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V7.0', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
     uibutton(UI.PnlMenu, 'Text', '1. Adquisición de Datos (UDP)', 'FontSize', 18, 'Position', [400, 450, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAdq));
     uibutton(UI.PnlMenu, 'Text', '2. Analizador Clínico (SPI)', 'FontSize', 18, 'Position', [400, 350, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAna));
     
     gAdq = uigridlayout(UI.PnlAdq, [6, 3], 'RowHeight', {'1x', '1x', 80, 70, 60, 60}, 'Padding', 20);
     
-    UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Envolvente (DSP)'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 3];
+    UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Envolvente (AD8232 + DSP)'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 3];
     UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM (DSP)'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 3];
     
-    numPuntosGrafica = 3000;
+    numPuntosGrafica = 6000; % Doble buffer gráfico por el aumento a 100Hz
     UI.lineaEMG = animatedline(UI.axEMG_TR, 'Color', [1 0.5 0], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     UI.lineaSVM = animatedline(UI.axSVM_TR, 'Color', [0 0.4 1], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     
@@ -195,18 +199,17 @@ function AVA_Core_System()
                         tRelativo = datosT(1) - Estado.T0_Global;
                         if tRelativo < 0, continue; end 
                         
-                        % ✅ DSP EMG: Filtro Pasa-Altos (Deriva) -> Rectificación -> Filtro Pasa-Bajos (Envolvente)
+                        % ✅ DSP EMG con señal de AD8232 (Centrado y Rectificado)
                         emg_crudo = datosT(5);
                         Estado.DSP.EMG_Baseline = (1 - Config.Filtros.Alpha_EMG_HP) * Estado.DSP.EMG_Baseline + (Config.Filtros.Alpha_EMG_HP * emg_crudo);
-                        emg_ac = abs(emg_crudo - Estado.DSP.EMG_Baseline); % Rectificación
+                        emg_ac = abs(emg_crudo - Estado.DSP.EMG_Baseline); % Rectificación de onda completa
                         Estado.DSP.EMG_Envelope = (1 - Config.Filtros.Alpha_EMG_LP) * Estado.DSP.EMG_Envelope + (Config.Filtros.Alpha_EMG_LP * emg_ac);
                         
-                        % ✅ DSP SVM: Filtro Pasa-Altos lento para aislar gravedad
+                        % DSP SVM
                         svm_crudo = sqrt(sum(datosT(2:4).^2));
                         Estado.DSP.SVM_Baseline = (1 - Config.Filtros.Alpha_SVM) * Estado.DSP.SVM_Baseline + (Config.Filtros.Alpha_SVM * svm_crudo);
                         svm_ac = abs(svm_crudo - Estado.DSP.SVM_Baseline);
                         
-                        % Detección basada en envolventes limpias
                         contraccionActual = (Estado.DSP.EMG_Envelope > Config.Umbrales.EMG_Contraccion) && (svm_ac > Config.Umbrales.SVM_Movimiento);
                         
                         addpoints(UI.lineaEMG, tRelativo, Estado.DSP.EMG_Envelope);
@@ -224,8 +227,8 @@ function AVA_Core_System()
                             actualizarEjesGrafica([UI.axEMG_TR, UI.axSVM_TR], tRelativo, Config.Muestreo.VentanaGrafica_s);
                         end
                         
-                        % Actualización Vitales
-                        if mod(Estado.UI.MuestrasRecibidas, 50) == 0
+                        % Actualización Vitales (ajustado para 100Hz)
+                        if mod(Estado.UI.MuestrasRecibidas, 100) == 0 
                             [Estado.Vitales.SPO2, Estado.Vitales.BPM] = detectarBPMRobusto(Estado.Vitales.BufferRed, Estado.Vitales.BufferIR, Config.Muestreo.Fs_Hz); 
                             
                             if Estado.DedoDetectado
@@ -254,7 +257,6 @@ function AVA_Core_System()
                             Estado.UI.MuestrasDesdeUltimoBackup = 0;
                         end
                         
-                        % Guardamos la Envolvente Limpia en el buffer en lugar del EMG bruto ruidoso
                         guardarEnRingBuffer(datosT(1), Estado.DSP.EMG_Envelope, svm_ac, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
                         Estado.UI.MuestrasRecibidas = Estado.UI.MuestrasRecibidas + 1;
                     end
@@ -337,10 +339,11 @@ function AVA_Core_System()
             nameCSV = fullfile(rutaSalida, sprintf('AVA_Estudio_%s.csv', fStr));
             nameTXT = fullfile(rutaSalida, sprintf('AVA_Anotaciones_%s.txt', fStr));
             
-            [anotFinal, epi, validosPLM] = procesarAASM(t_d, emg_d, svm_d, Config.Muestreo.Fs_Hz, Config);
+            % ✅ Llamada actualizada a procesarAASM que ahora acepta el vector SpO2
+            [anotFinal, epi, validosPLM] = procesarAASM(t_d, emg_d, svm_d, spo2_d, Config.Muestreo.Fs_Hz, Config);
             
             fid = fopen(nameCSV, 'w');
-            fprintf(fid, '# AVA Nexus V6.8 Estudio DSP\n');
+            fprintf(fid, '# AVA Nexus V7.0 Estudio DSP AASM\n');
             fprintf(fid, '# Exportado: %s\n', char(datetime('now')));
             fprintf(fid, 'Time_s_UTC,EMG_Env,SVM_ac,SpO2_pct,BPM_bpm,AASM_SPI\n');
             for i = 1:length(t_d)
@@ -366,7 +369,9 @@ function AVA_Core_System()
             if size(vT, 1) < 10, uialert(UI.Fig, 'CSV inválido.', 'Error'); return; end
             
             fsReal = 1 / mean(diff(vT), 'omitnan');
-            [Analisis.Anotaciones, mEpi, validosPLM] = procesarAASM(vT, vEMG, vSVM, fsReal, Config);
+            
+            % ✅ Procesamiento con Regla Respiratoria SpO2
+            [Analisis.Anotaciones, mEpi, validosPLM] = procesarAASM(vT, vEMG, vSVM, vSPO2, fsReal, Config);
             
             Analisis.EventosPLM = validosPLM; 
             Analisis.TotPLM = size(validosPLM, 1);
@@ -377,7 +382,7 @@ function AVA_Core_System()
             delete(UI.pnlGraficasAna.Children); 
             gGrid = uigridlayout(UI.pnlGraficasAna, [2 + (~isempty(vSPO2)) + (~isempty(vBPM)), 1], 'Padding', 0);
             
-            ax1 = uiaxes(gGrid); title(ax1, 'EMG Envolvente + PLM'); hold(ax1,'on'); grid(ax1, 'on');
+            ax1 = uiaxes(gGrid); title(ax1, 'EMG Envolvente + PLM (AASM Contrastado)'); hold(ax1,'on'); grid(ax1, 'on');
             plot(ax1, vT, vEMG, 'Color', [0.6 0.6 0.6]); 
             plot(ax1, vT, Analisis.Anotaciones * max(100, max(vEMG)), 'r', 'LineWidth', 1.5);
             
@@ -385,7 +390,11 @@ function AVA_Core_System()
             listaEjes = [ax1, ax2]; 
             
             if ~isempty(vSPO2)
-                ax3 = uiaxes(gGrid); title(ax3, 'SpO2 %'); plot(ax3, vT, vSPO2, 'g'); ylim(ax3, [85 100]); listaEjes = [listaEjes, ax3];
+                ax3 = uiaxes(gGrid); title(ax3, 'SpO2 % (Detección Hipoxia)'); hold(ax3, 'on'); 
+                plot(ax3, vT, vSPO2, 'g'); 
+                % Mostrar la línea base aproximada de SpO2 para visualización
+                plot(ax3, vT, movmean(vSPO2, fsReal * 120), 'k--', 'LineWidth', 1);
+                ylim(ax3, [85 100]); listaEjes = [listaEjes, ax3];
             end
             if ~isempty(vBPM)
                 ax4 = uiaxes(gGrid); title(ax4, 'BPM'); plot(ax4, vT, vBPM, 'r'); ylim(ax4, [40 160]); listaEjes = [listaEjes, ax4];
@@ -523,13 +532,10 @@ function AVA_Core_System()
     end
 
     function [spo2, bpm] = detectarBPMRobusto(bR, bI, fs)
-        % ✅ DSP MÉDICO: Filtro Pasa-Banda digital sin Toolboxes
         spo2 = 95; bpm = 70;
         if length(bR) < fs * 5 || length(bI) < fs * 5, return; end
         
-        % Pasa-altos (elimina DC y deriva respiratoria) quitando el promedio móvil de 1s
         bI_HP = bI - movmean(bI, fs);
-        % Pasa-bajos (suavizado)
         bI_Filt = movmean(bI_HP, round(fs/10));
         
         bI_norm = bI_Filt / (std(bI_Filt) + eps);
@@ -550,7 +556,8 @@ function AVA_Core_System()
             end
         end
         
-        % SpO2 con extracción robusta AC/DC
+        % NOTE: Cálculo AC/DC actual como placeholder funcional.
+        % Requiere calibración empírica en fase posterior.
         bR_HP = bR - movmean(bR, fs);
         acR = std(movmean(bR_HP, round(fs/10)));
         dcR = mean(movmean(bR, fs));
@@ -564,19 +571,32 @@ function AVA_Core_System()
         end
     end
     
-    function [anotFinal, mEpi, validosPLM] = procesarAASM(t, e, s, fs, cfg)
-        % ✅ AASM ACTUALIZADO: Filtrado de datos brutos a Envolvente antes de procesar
-        t = t(:); e = e(:); s = s(:);
-        e_hp = e - movmean(e, fs); % Eliminar línea base
-        e_env = movmean(abs(e_hp), round(fs/2)); % Envolvente RMS aproximada
-        s_ac = abs(s - movmean(s, fs*5)); % Quitar gravedad del SVM
+    function [anotFinal, mEpi, validosPLM] = procesarAASM(t, e, s, spo2_data, fs, cfg)
+        % ✅ MÉDICA: Algoritmo AASM Integrado con Exclusión Respiratoria
+        t = t(:); e = e(:); s = s(:); spo2_data = spo2_data(:);
+        
+        % 1. Extraer Señal de Movimiento (EMG + SVM)
+        e_hp = e - movmean(e, fs); 
+        e_env = movmean(abs(e_hp), round(fs/2)); 
+        s_ac = abs(s - movmean(s, fs*5)); 
         
         emg_activo = e_env > cfg.Umbrales.EMG_Contraccion;
         svm_activo = s_ac > cfg.Umbrales.SVM_Movimiento;
         fus = emg_activo & svm_activo;
         
+        % 2. Extraer Eventos Respiratorios (Caída de SpO2 >= 3%)
+        % Promedio base muy lento (2 minutos)
+        spo2_base = movmean(spo2_data, fs * 120);
+        es_hipoxia = (spo2_base - spo2_data) >= 3;
+        
+        % Expansión de la ventana de exclusión (±10 segundos alrededor del evento respiratorio)
+        ventanaExclusion = round(fs * 10);
+        exclusionRespiratoria = movmax(double(es_hipoxia), ventanaExclusion * 2) > 0;
+        
         fl = diff([0; fus; 0]); iI = find(fl==1); iF = find(fl==-1)-1;
         iIU = []; iFU = [];
+        
+        % 3. Fusión Microcortes
         if ~isempty(iI)
             cA = iI(1); cF = iF(1);
             for i = 2:length(iI)
@@ -586,13 +606,21 @@ function AVA_Core_System()
             iIU(end+1,1)=cA; iFU(end+1,1)=cF;
         end
         
+        % 4. Validación de Duración + EXCLUSIÓN RESPIRATORIA
         mPlm_Candidatos = []; 
         for i = 1:length(iIU)
             dur = (iFU(i) - iIU(i)) / fs; 
-            if dur >= 0.5 && dur <= 10.0, mPlm_Candidatos = [mPlm_Candidatos; iIU(i), iFU(i)]; end 
+            if dur >= 0.5 && dur <= 10.0
+                % Si hay un evento de hipoxia superpuesto o cercano, descartar el movimiento
+                if sum(exclusionRespiratoria(iIU(i):iFU(i))) == 0
+                    mPlm_Candidatos = [mPlm_Candidatos; iIU(i), iFU(i)]; %#ok<AGROW>
+                end
+            end 
         end
         
         mEpi = []; validosPLM = []; 
+        
+        % 5. Regla de Periodicidad
         if ~isempty(mPlm_Candidatos)
             rt = mPlm_Candidatos(1,:);
             for j = 2:size(mPlm_Candidatos,1)
