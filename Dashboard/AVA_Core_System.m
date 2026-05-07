@@ -20,7 +20,6 @@ function AVA_Core_System()
     Config.BufferMax.Muestras = Config.Muestreo.Fs_Hz * 3600 * Config.BufferMax.Horas; 
     
     Config.UI.RefrescoGraficas_Muestras = 5; % 10 FPS
-    Config.UI.MaxPaquetesUDP_Lectura = 20; 
     Config.Backup.MuestrasIntervalo = Config.Muestreo.Fs_Hz * 300;
     
     % Umbrales 
@@ -30,8 +29,8 @@ function AVA_Core_System()
     
     Config.Filtros.Alpha_Base = 0.001; 
     
-    Config.Norm.EMG_Min = -500;  Config.Norm.EMG_Max = 500;   
-    Config.Norm.SVM_Min = 0;     Config.Norm.SVM_Max = 15;    
+    Config.Norm.EMG_Min = -500;  Config.Norm.EMG_Max = 5000;   
+    Config.Norm.SVM_Min = 0;     Config.Norm.SVM_Max = 40;    
     
     %% --- 2. ESTADO GLOBAL Y RING BUFFER ---
     RingBuffer = struct();
@@ -54,14 +53,12 @@ function AVA_Core_System()
     Estado.UltimoBackupIdx = 1;
     
     Estado.ContadorErroresUDP = 0;
-    Estado.MaximoErroresPermitidos = 100; 
     
     % --- BASE EMG PROMEDIO ---
     Estado.EMG_Promedio = 0;
     Estado.EMG_Muestras = 0;
     
     Estado.Filtros.SVM_Base = 1;    
-    Estado.Filtros.PPG_Base = 0;
     
     Estado.Vitales.SPO2 = 98;
     Estado.Vitales.BPM = 70;
@@ -84,7 +81,7 @@ function AVA_Core_System()
     limpiezaCierre = onCleanup(@() liberarRecursos(Red));
     
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
-    logSistema('INFO', 'Iniciando AVA Nexus V6.5 Medical Grade - Batching + CRC16 Sync');
+    logSistema('INFO', 'Iniciando AVA Nexus V6.5 Medical Grade - DIAGNÓSTICO UDP');
     UI = struct();
     UI.Fig = uifigure('Name', 'AVA Nexus V6.5 | Medical Edition', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @(src, event) cerrarAplicacion(src, event);
@@ -94,10 +91,10 @@ function AVA_Core_System()
     UI.PnlAdq  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     UI.PnlAna  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     
-    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V6.5', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 300, 60], 'HorizontalAlignment', 'center');
+    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V6.5', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
     uilabel(UI.PnlMenu, 'Text', 'OOM-Protected PSG Endurance Edition', 'FontSize', 16, 'Position', [250, 600, 700, 30], 'HorizontalAlignment', 'center', 'FontColor', [0.3 0.3 0.3]);
     uibutton(UI.PnlMenu, 'Text', '1. Adquisición de Datos (UDP)', 'FontSize', 18, 'Position', [375, 450, 450, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAdq));
-    uibutton(UI.PnlMenu, 'Text', '2. Analizador Clínico (OOM Safe)', 'FontSize', 18, 'Position', [375, 350, 450, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAna));
+    uibutton(UI.PnlMenu, 'Text', '2. Analizador Clínico (SPI)', 'FontSize', 18, 'Position', [375, 350, 450, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAna));
     
     gAdq = uigridlayout(UI.PnlAdq, [6, 3], 'RowHeight', {'1x', '1x', 80, 70, 60, 60}, 'Padding', 20);
     
@@ -153,7 +150,6 @@ function AVA_Core_System()
                 % 1. PROCESAR BÍCEPS (Batch de N muestras)
                 lineasB = leerYValidarBatch(Red.UdpBiceps, 4); % Espera: UNIX, R, IR, CRC
                 if ~isempty(lineasB)
-                    % Establecer T0_Unix si es el primer paquete de la sesión
                     if Estado.T0_Unix == -1, Estado.T0_Unix = lineasB(1,1); end
                     
                     for i = 1:size(lineasB, 1)
@@ -167,7 +163,6 @@ function AVA_Core_System()
                 % 2. PROCESAR TOBILLO (Batch de N muestras)
                 lineasT = leerYValidarBatch(Red.UdpTobillo, 6); % Espera: UNIX, Ax, Ay, Az, EMG, CRC
                 if ~isempty(lineasT)
-                    % Establecer T0_Unix si el Tobillo llegó antes que el Bíceps
                     if Estado.T0_Unix == -1, Estado.T0_Unix = lineasT(1,1); end
                     
                     for i = 1:size(lineasT, 1)
@@ -252,7 +247,7 @@ function AVA_Core_System()
         catch excepcionMain
             logSistema('WARN', ['Excepción principal (mitigada): ', excepcionMain.message]);
         end
-        drawnow limitrate; % Crucial para evitar que la GUI consuma toda la CPU
+        drawnow limitrate; 
         pause(0.001); 
     end
     
@@ -274,26 +269,32 @@ function AVA_Core_System()
             Analisis.T = []; Analisis.Anotaciones = []; Analisis.EventosPLM = []; Analisis.IdxNav = 0;
             
             try 
-                Red.UdpTobillo = udpport("datagram","IPV4","LocalHost","0.0.0.0","LocalPort", Config.Puertos.Tobillo); 
+                Red.UdpTobillo = udpport("datagram", "LocalPort", Config.Puertos.Tobillo); 
                 logSistema('INFO', 'Puerto UDP Tobillo abierto.');
             catch ME
-                uialert(UI.Fig, sprintf('Puerto %d bloqueado.', Config.Puertos.Tobillo), 'Error UDP'); return;
+                uialert(UI.Fig, ['Error Tobillo: ', ME.message], 'Error UDP'); 
+                Estado.Capturando = false;
+                return;
             end
             
             try 
-                Red.UdpBiceps  = udpport("datagram","IPV4","LocalHost","0.0.0.0","LocalPort", Config.Puertos.Biceps); 
+                Red.UdpBiceps  = udpport("datagram", "LocalPort", Config.Puertos.Biceps); 
+                logSistema('INFO', 'Puerto UDP Bíceps abierto.');
             catch ME
-                clear Red.UdpTobillo; uialert(UI.Fig, sprintf('Puerto %d bloqueado.', Config.Puertos.Biceps), 'Error UDP'); return;
+                clear Red.UdpTobillo; 
+                uialert(UI.Fig, ['Error Bíceps: ', ME.message], 'Error UDP'); 
+                Estado.Capturando = false;
+                return;
             end
             
             UI.lblInfo.Text = "ACTIVO"; UI.lblInfo.FontColor = [0 0.5 0];
             clearpoints(UI.lineaEMG); clearpoints(UI.lineaSVM); 
             
             UI.btnUDP.Text = "⏹ Detener"; UI.btnUDP.BackgroundColor = [1 0.4 0.4];
-            logSistema('INFO', 'Captura iniciada.');
+            logSistema('INFO', 'Captura iniciada. Esperando datos UDP...');
         else
             liberarRecursos(Red);
-            UI.btnUDP.Text = "▶ Conectar"; UI.btnUDP.BackgroundColor = [0.2 0.6 0.2];
+            UI.btnUDP.Text = "▶ Conectar Hardware"; UI.btnUDP.BackgroundColor = [0.2 0.6 0.2];
             UI.lblInfo.Text = "EN ESPERA"; UI.lblInfo.FontColor = [0.5 0.5 0.5];
             logSistema('INFO', 'Captura detenida.');
         end
@@ -358,7 +359,6 @@ function AVA_Core_System()
             if dtReal <= 0 || isnan(dtReal), uialert(UI.Fig, 'Tiempos nulos o corruptos detectados.', 'Error'); return; end
             fsReal = 1 / dtReal;
             
-            % Siempre aplicamos AASM al crudo cargado
             [Analisis.Anotaciones, mEpi, validosPLM] = procesarAASM(vT, vEMG, vSVM, fsReal, Config);
             
             totPLM = size(validosPLM, 1);
@@ -412,13 +412,16 @@ function AVA_Core_System()
             return; 
         end
         
-        % VITAL: Leer TODOS los paquetes en cola para evitar lag acumulativo
         numPaquetes = puerto.NumDatagramsAvailable;
         paquetes = read(puerto, numPaquetes); 
         
         for p = 1:numPaquetes
             payload = char(paquetes(p).Data);
-            lineas = strsplit(payload, '\n'); % Separa el lote de muestras
+            
+            % --- ¡IMPRIMIR EN CONSOLA LO QUE LLEGA! ---
+            disp(['[', num2str(puerto.LocalPort), '] Recibido: ', payload]); 
+            
+            lineas = strsplit(payload, '\n'); 
             
             for i = 1:length(lineas)
                 strLine = strtrim(lineas{i});
@@ -426,28 +429,28 @@ function AVA_Core_System()
                 
                 partes = strsplit(strLine, ',');
                 if length(partes) == expectedCols
-                    % Extraer CRC y reconstruir mensaje
                     crcRecibidoStr = partes{end};
                     msgOriginal = strjoin(partes(1:end-1), ',');
                     
-                    % Validación de Integridad
-                    if strcmp(m_crc16(msgOriginal), crcRecibidoStr)
+                    crcCalculado = m_crc16(msgOriginal);
+                    if strcmp(crcCalculado, crcRecibidoStr)
                         nums = str2double(partes(1:end-1));
                         if ~any(isnan(nums))
                             dataOut = [dataOut; nums]; %#ok<AGROW>
                         end
                     else
-                        disp('[WARN] CRC16 Fallido. Trama descartada por ruido en red.');
+                        disp(['[WARN] CRC Fallido. Recibido: ', crcRecibidoStr, ' Esperado: ', crcCalculado]);
                     end
+                else
+                    disp(['[WARN] Cols incorrectas. Exp: ', num2str(expectedCols), ' Rx: ', num2str(length(partes))]);
                 end
             end
         end
     end
 
     function crcHex = m_crc16(data)
-        % Implementación de CRC-16-IBM (Polynomial 0xA001)
         crc = uint16(hex2dec('FFFF'));
-        bytes = uint8(data);
+        bytes = uint8(char(data)); % <-- FORZADO A CHAR
         for i = 1:length(bytes)
             crc = bitxor(crc, uint16(bytes(i)));
             for j = 1:8
@@ -582,7 +585,6 @@ function AVA_Core_System()
         
         fl = diff([0; fus; 0]); iI = find(fl==1); iF = find(fl==-1)-1;
         
-        % 1. Fusión de micro-cortes (<0.5s)
         iIU = []; iFU = [];
         if ~isempty(iI)
             cA = iI(1); cF = iF(1);
@@ -593,14 +595,12 @@ function AVA_Core_System()
             iIU(end+1,1)=cA; iFU(end+1,1)=cF;
         end
         
-        % 2. Regla de Duración (0.5s a 10s)
         mPlm_Candidatos = []; 
         for i = 1:length(iIU)
             dur = (iFU(i) - iIU(i)) / fs; 
             if dur >= 0.5 && dur <= 10.0, mPlm_Candidatos = [mPlm_Candidatos; iIU(i), iFU(i)]; end %#ok<AGROW>
         end
         
-        % 3. REGLA DE 4 Y SEPARACIÓN (5s a 90s)
         mEpi = []; 
         validosPLM = []; 
         
@@ -624,7 +624,6 @@ function AVA_Core_System()
             end
         end
         
-        % 4. Generar máscara final solo con eventos válidos
         anotFinal = zeros(length(t), 1); 
         for k = 1:size(validosPLM,1), anotFinal(validosPLM(k,1):validosPLM(k,2)) = 1; end
         anotFinal = anotFinal(:); 
