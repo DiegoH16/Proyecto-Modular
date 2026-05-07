@@ -1,39 +1,27 @@
 /*
- * DISPOSITIVO TOBILLO: MPU6050 + EMG (V3.4 OFFLINE AP MODE - BROADCAST)
+ * DISPOSITIVO BÍCEPS: MAX30105 PPG Sensor (V3.5 DSP OPTIMIZED)
  */
 #include <Wire.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
+#include "MAX30105.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <sys/time.h>
-#include <math.h> // Requerido para fabsf()
 
-// --- CONFIGURACIÓN DE RED (MODO PUNTO DE ACCESO) ---
-const char* ssid = "AVA_NEXUS";        
-const char* password = "ava_password"; 
-
+const char* ssid = "AVA_NEXUS";
+const char* password = "ava_password";
 const char* ip_broadcast = "192.168.4.255"; 
 
-const int puerto_datos = 8888;
+const int puerto_datos = 8889;
 const int puerto_control = 9999;
 
 WiFiUDP udp_datos, udp_control;
-Adafruit_MPU6050 mpu;
+MAX30105 particleSensor;
 
-// --- PINES Y MUESTREO ---
-const int PIN_EMG = 4; // ADC1_CH3 en ESP32
-const int FRECUENCIA_HZ = 50;
-const unsigned long INTERVALO_US = 1000000 / FRECUENCIA_HZ; // 20ms exactos
-
-// --- BATCHING ESTÁTICO ---
 const int TAMANO_LOTE = 5;
 int contador = 0;
 char payload[512]; 
 int payload_len = 0;
-unsigned long ultimo_muestreo_us = 0;
 
-// Cálculo de CRC16 (Modbus 0xA001)
 uint16_t crc16(const char* data, int len) {
   uint16_t crc = 0xFFFF;
   for (int i = 0; i < len; i++) {
@@ -48,93 +36,82 @@ uint16_t crc16(const char* data, int len) {
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
   
-  // --- CREAR RED WIFI (MODO PUNTO DE ACCESO) ---
-  Serial.println("\n[SETUP] Iniciando Modo Router (Access Point)...");
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid, password);
-  delay(500);
-  
-  Serial.println("[OK] Red AVA_NEXUS Creada!");
-  Serial.print("IP del Tobillo (Router): ");
-  Serial.println(WiFi.softAPIP());
-
-  // --- INICIALIZACIÓN DE HARDWARE ---
-  Wire.begin(21, 22);
-  Wire.setClock(400000); // 400kHz Fast I2C para el MPU6050
-
-  if (!mpu.begin()) {
-    Serial.println("[ERROR] MPU6050 no encontrado!");
-    delay(1000); ESP.restart();
+  int intentos = 0;
+  while (WiFi.status() != WL_CONNECTED && intentos < 40) {
+    delay(500); intentos++;
   }
+  if (WiFi.status() != WL_CONNECTED) ESP.restart();
 
-  mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ); 
+  Wire.begin(21, 22);
+  Wire.setClock(100000); 
 
-  analogReadResolution(12);
+  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) ESP.restart();
 
-  // --- SYNC INICIAL A MATLAB (Vía Broadcast al puerto 9999) ---
+  // ✅ MEJORA MÉDICA CRÍTICA: Forzar el hardware a 50 Hz exactos.
+  // Parámetros: powerLevel(60), sampleAverage(4), ledMode(2), sampleRate(50), pulseWidth(411), adcRange(16384)
+  particleSensor.setup(60, 4, 2, 50, 411, 16384);
+  particleSensor.setPulseAmplitudeRed(0x7A);
+  particleSensor.setPulseAmplitudeIR(0x3F);
+
   struct timeval tv; gettimeofday(&tv, NULL);
   char sync_msg[100];
-  snprintf(sync_msg, sizeof(sync_msg), "SYNC,TOBILLO,%lld,%06ld\n", (long long)tv.tv_sec, (long)tv.tv_usec);
+  snprintf(sync_msg, sizeof(sync_msg), "SYNC,BICEPS,%lld,%06ld\n", (long long)tv.tv_sec, (long)tv.tv_usec);
   udp_control.beginPacket(ip_broadcast, puerto_control);
   udp_control.print(sync_msg);
   udp_control.endPacket();
 
   payload_len = 0; memset(payload, 0, sizeof(payload));
-  ultimo_muestreo_us = micros();
 }
 
 void loop() {
-  unsigned long t_actual = micros();
+  if(WiFi.status() != WL_CONNECTED) {
+      WiFi.disconnect(); WiFi.reconnect(); delay(2000); return;
+  }
 
-  // Temporizador estricto de 50 Hz por microsegundos
-  if (t_actual - ultimo_muestreo_us >= INTERVALO_US) {
-    ultimo_muestreo_us = t_actual;
+  static int health_check = 0;
+  if (++health_check >= 100) {
+    Wire.beginTransmission(0x57);
+    if (Wire.endTransmission() != 0) {
+      if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) ESP.restart();
+    }
+    health_check = 0;
+  }
 
-    sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
+  particleSensor.check();
 
-    float ax = a.acceleration.x;
-    float ay = a.acceleration.y;
-    float az = a.acceleration.z;
-    int emg_raw = analogRead(PIN_EMG);
+  int samplesToRead = particleSensor.available();
+  if (samplesToRead > 10) samplesToRead = 10; 
 
-    if (fabsf(ax) > 50.0f || fabsf(ay) > 50.0f || fabsf(az) > 50.0f) return;
+  while (samplesToRead--) {
+    struct timeval tv; gettimeofday(&tv, NULL);
 
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
+    uint32_t red_raw = particleSensor.getFIFORed();
+    uint32_t ir_raw = particleSensor.getFIFOIR();
+
+    red_raw = min(red_raw, (uint32_t)300000);
+    ir_raw = min(ir_raw, (uint32_t)300000);
 
     char linea[128];
-    // SEPARADO POR COMA: Segundos, Microsegundos, Ax, Ay, Az, EMG
-    int len = snprintf(linea, sizeof(linea), "%lld,%06ld,%.2f,%.2f,%.2f,%d", 
-                       (long long)tv.tv_sec, (long)tv.tv_usec, ax, ay, az, emg_raw);
+    int len = snprintf(linea, sizeof(linea), "%lld,%06ld,%lu,%lu", 
+                       (long long)tv.tv_sec, (long)tv.tv_usec, red_raw, ir_raw);
 
-    // Calcular CRC16
     uint16_t crc = crc16(linea, len);
     
-    // Anexar al payload estático
     int added = snprintf(payload + payload_len, sizeof(payload) - payload_len, "%s,%04X\n", linea, crc);
-    
-    if (added > 0 && added < (sizeof(payload) - payload_len)) {
-        payload_len += added;
-    }
+    if (added > 0 && added < (sizeof(payload) - payload_len)) payload_len += added;
 
     contador++;
 
-    // Enviar lote de 5 muestras (Batching)
     if (contador >= TAMANO_LOTE) {
-      // ✅ MEJORA CRÍTICA: Solo enviar UDP si hay clientes (MATLAB o Bíceps) conectados al AP
-      if (WiFi.softAPgetStationNum() > 0) {
-        udp_datos.beginPacket(ip_broadcast, puerto_datos);
-        udp_datos.write((const uint8_t*)payload, payload_len);
-        udp_datos.endPacket();
-      }
-      payload_len = 0; contador = 0; // Reset
+      udp_datos.beginPacket(ip_broadcast, puerto_datos);
+      udp_datos.write((const uint8_t*)payload, payload_len);
+      udp_datos.endPacket();
+      payload_len = 0; contador = 0; 
     }
+    particleSensor.nextSample();
   }
-  
-  yield(); // Mantener estable el stack Wi-Fi y alimentar el Watchdog
+  yield(); 
 }
