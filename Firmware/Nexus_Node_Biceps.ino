@@ -1,12 +1,14 @@
 /*
  * DISPOSITIVO BÍCEPS: MAX30105 PPG Sensor
- * V3.0 PRODUCTION: Sincronización robusta, checksum, manejo de overflow
- * Envía: Tiempo_ms,Red_RAW,IR_RAW,CRC16\n
+ * V3.1 PRODUCTION: Sin Strings, NTP Sync, Buffers Estáticos (C-Style)
+ * Envía: Timestamp_UNIX,Red_RAW,IR_RAW,CRC16\n
  */
 #include <Wire.h>
 #include "MAX30105.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <time.h>
+#include <sys/time.h>
 
 // --- CONFIGURACIÓN ---
 const char* ssid = "MEGACABLE-2.4G-CCAB";
@@ -18,30 +20,23 @@ const int puerto_control = 9999;
 WiFiUDP udp_datos, udp_control;
 MAX30105 particleSensor;
 
-// --- GESTIÓN DE TIEMPO ROBUSTO ---
-struct {
-  uint64_t ms_total = 0;
-  uint32_t ms_last = 0;
-  
-  uint64_t getTotalMs() {
-    uint32_t ms_now = millis();
-    if (ms_now < ms_last) ms_total += 4294967296ULL;
-    ms_last = ms_now;
-    return ms_total + ms_now;
-  }
-} timeManager;
+// --- NTP SYNC ---
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 0; // Guardamos en UTC puro para sincronizar en MATLAB
+const int   daylightOffset_sec = 0;
 
-// --- BATCHING Y VALIDACIÓN ---
+// --- BATCHING ESTÁTICO (C-Style) ---
 const int TAMANO_LOTE = 5;
 int contador = 0;
-String payload = "";
+char payload[512]; // Buffer estático en lugar de String
+int payload_len = 0;
 bool sensor_ok = true;
 
-// --- CRC16 CALCULATION ---
-uint16_t crc16(String data) {
+// --- CRC16 ESTÁTICO ---
+uint16_t crc16(const char* data, int len) {
   uint16_t crc = 0xFFFF;
-  for (int i = 0; i < data.length(); i++) {
-    crc ^= (uint16_t)data[i];
+  for (int i = 0; i < len; i++) {
+    crc ^= (uint8_t)data[i];
     for (int j = 0; j < 8; j++) {
       if (crc & 0x0001) crc = (crc >> 1) ^ 0xA001;
       else crc >>= 1;
@@ -70,9 +65,19 @@ void setup() {
   Serial.println("\n[OK] WiFi Conectado!");
   Serial.print("IP: "); Serial.println(WiFi.localIP());
 
-  // Inicializar I2C y sensor
+  // --- SINCRONIZACIÓN NTP ---
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  struct tm timeinfo;
+  Serial.print("Sincronizando hora NTP");
+  while (!getLocalTime(&timeinfo)) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("\n[OK] Hora NTP Sincronizada!");
+
+  // Inicializar I2C y sensor MAX30105
   Wire.begin(21, 22);
-  Wire.setClock(100000);
+  Wire.setClock(100000); // MAX30105 opera de manera estable a 100kHz
 
   if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
     Serial.println("[ERROR] MAX30105 no encontrado!");
@@ -85,16 +90,20 @@ void setup() {
   particleSensor.setPulseAmplitudeRed(0x7A);
   particleSensor.setPulseAmplitudeIR(0x3F);
 
-  payload.reserve(300);
+  // Enviar SYNC a MATLAB con timestamp UNIX real
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  char sync_msg[100];
+  snprintf(sync_msg, sizeof(sync_msg), "SYNC,BICEPS,%lld.%06ld\n", (long long)tv.tv_sec, (long)tv.tv_usec);
   
-  // Enviar SYNC a MATLAB
-  delay(500);
   udp_control.beginPacket(ip_matlab, puerto_control);
-  udp_control.print("SYNC,BICEPS,");
-  udp_control.print(timeManager.getTotalMs());
-  udp_control.print("\n");
+  udp_control.print(sync_msg);
   udp_control.endPacket();
   Serial.println("[OK] SYNC enviado a MATLAB");
+
+  // Limpiar buffer
+  payload_len = 0;
+  memset(payload, 0, sizeof(payload));
 }
 
 void loop() {
@@ -103,13 +112,13 @@ void loop() {
   // Verificación de salud I2C cada 100 muestras
   static int health_check = 0;
   if (++health_check >= 100) {
-    Wire.beginTransmission(0x57);
+    Wire.beginTransmission(0x57); // Dirección I2C del MAX30105
     if (Wire.endTransmission() != 0) {
       Serial.println("[WARN] I2C check failed!");
       udp_control.beginPacket(ip_matlab, puerto_control);
       udp_control.print("ERROR,I2C_LOST\n");
       udp_control.endPacket();
-      // Intentar reconectar
+      // Intentar reconectar sin excepciones
       if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
         ESP.restart();
       }
@@ -117,8 +126,13 @@ void loop() {
     health_check = 0;
   }
 
+  // Vaciar el FIFO del sensor
   while (particleSensor.available()) {
-    uint64_t t_ms = timeManager.getTotalMs();
+    
+    // Obtener Tiempo UNIX Real (Segundos + Microsegundos)
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+
     uint32_t red_raw = particleSensor.getFIFORed();
     uint32_t ir_raw = particleSensor.getFIFOIR();
 
@@ -129,25 +143,36 @@ void loop() {
       continue;
     }
 
-    // Construir línea CSV
-    String linea = String(t_ms) + "," + String(red_raw) + "," + String(ir_raw);
-    String linea_con_crc = linea + "," + String(crc16(linea), HEX) + "\n";
-    
-    payload += linea_con_crc;
+    // Formatear línea usando C-strings puros
+    char linea[128];
+    int len = snprintf(linea, sizeof(linea), "%lld.%06ld,%lu,%lu", 
+                       (long long)tv.tv_sec, (long)tv.tv_usec, 
+                       (unsigned long)red_raw, (unsigned long)ir_raw);
+
+    // Calcular CRC de la línea
+    uint16_t crc = crc16(linea, len);
+
+    // Añadir línea + CRC al payload estático
+    int added = snprintf(payload + payload_len, sizeof(payload) - payload_len, "%s,%04X\n", linea, crc);
+    if (added > 0 && added < (sizeof(payload) - payload_len)) {
+        payload_len += added;
+    }
+
     contador++;
 
+    // Enviar lote
     if (contador >= TAMANO_LOTE) {
-      // Enviar paquete
       udp_datos.beginPacket(ip_matlab, puerto_datos);
-      udp_datos.print(payload);
+      udp_datos.write((const uint8_t*)payload, payload_len);
       udp_datos.endPacket();
 
-      payload = "";
+      // Reiniciar buffer estático
+      payload_len = 0;
       contador = 0;
     }
 
     particleSensor.nextSample();
   }
 
-  delay(1); // Yield to WiFi stack
+  delay(1); // Yield to WiFi stack prevent watchdog resets
 }
