@@ -1,5 +1,6 @@
 /*
- * DISPOSITIVO BÍCEPS: MAX30105 PPG Sensor (V3.5 DSP OPTIMIZED)
+ * DISPOSITIVO BÍCEPS: MAX30105 PPG Sensor (V4.0 100Hz BROADCAST)
+
  */
 #include <Wire.h>
 #include "MAX30105.h"
@@ -7,8 +8,8 @@
 #include <WiFiUdp.h>
 #include <sys/time.h>
 
-const char* ssid = "AVA_NEXUS";
-const char* password = "ava_password";
+const char* ssid = "AVA_NEXUS";       
+const char* password = "ava_password"; 
 const char* ip_broadcast = "192.168.4.255"; 
 
 const int puerto_datos = 8889;
@@ -50,9 +51,7 @@ void setup() {
 
   if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) ESP.restart();
 
-  // ✅ MEJORA MÉDICA CRÍTICA: Forzar el hardware a 50 Hz exactos.
-  // Parámetros: powerLevel(60), sampleAverage(4), ledMode(2), sampleRate(50), pulseWidth(411), adcRange(16384)
-  particleSensor.setup(60, 4, 2, 50, 411, 16384);
+  particleSensor.setup(60, 4, 2, 100, 411, 16384);
   particleSensor.setPulseAmplitudeRed(0x7A);
   particleSensor.setPulseAmplitudeIR(0x3F);
 
@@ -72,8 +71,8 @@ void loop() {
   }
 
   static int health_check = 0;
-  if (++health_check >= 100) {
-    Wire.beginTransmission(0x57);
+  if (++health_check >= 200) { // Adaptado para 100Hz
+    Wire.beginTransmission(0x57); 
     if (Wire.endTransmission() != 0) {
       if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) ESP.restart();
     }
