@@ -26,11 +26,7 @@ function AVA_Core_System()
     Config.Umbrales.IR_Minimo_Dedo = 3000;
     Config.Umbrales.EMG_Contraccion = 150; 
     Config.Umbrales.SVM_Movimiento = 0.4;  
-    
     Config.Filtros.Alpha_Base = 0.001; 
-    
-    Config.Norm.EMG_Min = -500;  Config.Norm.EMG_Max = 5000;   
-    Config.Norm.SVM_Min = 0;     Config.Norm.SVM_Max = 40;    
     
     %% --- 2. ESTADO GLOBAL Y RING BUFFER ---
     RingBuffer = struct();
@@ -47,22 +43,17 @@ function AVA_Core_System()
     Estado = struct();
     Estado.Capturando = false;
     Estado.T0_Unix = -1; % Sincronización absoluta
-    Estado.PrimeraTramaTobillo = false;
-    Estado.PrimeraTramaBiceps = false;
     Estado.DedoDetectado = false; 
     Estado.UltimoBackupIdx = 1;
-    
-    Estado.ContadorErroresUDP = 0;
     
     % --- BASE EMG PROMEDIO ---
     Estado.EMG_Promedio = 0;
     Estado.EMG_Muestras = 0;
-    
     Estado.Filtros.SVM_Base = 1;    
     
     Estado.Vitales.SPO2 = 98;
     Estado.Vitales.BPM = 70;
-    % Buffer extendido a 30 segundos para mayor robustez
+    % Buffer robusto de 30 segundos (1500 muestras @ 50Hz)
     Estado.Vitales.BufferRed = zeros(1, Config.Muestreo.Fs_Hz * 30); 
     Estado.Vitales.BufferIR  = zeros(1, Config.Muestreo.Fs_Hz * 30);
     
@@ -81,7 +72,7 @@ function AVA_Core_System()
     limpiezaCierre = onCleanup(@() liberarRecursos(Red));
     
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
-    logSistema('INFO', 'Iniciando AVA Nexus V6.5 Medical Grade');
+    logSistema('INFO', 'Iniciando AVA Nexus V6.5 | Release Candidate');
     UI = struct();
     UI.Fig = uifigure('Name', 'AVA Nexus V6.5 | Medical Edition', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @(src, event) cerrarAplicacion(src, event);
@@ -92,9 +83,8 @@ function AVA_Core_System()
     UI.PnlAna  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     
     uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V6.5', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
-    uilabel(UI.PnlMenu, 'Text', 'OOM-Protected PSG Endurance Edition', 'FontSize', 16, 'Position', [250, 600, 700, 30], 'HorizontalAlignment', 'center', 'FontColor', [0.3 0.3 0.3]);
-    uibutton(UI.PnlMenu, 'Text', '1. Adquisición de Datos (UDP)', 'FontSize', 18, 'Position', [375, 450, 450, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAdq));
-    uibutton(UI.PnlMenu, 'Text', '2. Analizador Clínico (SPI)', 'FontSize', 18, 'Position', [375, 350, 450, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAna));
+    uibutton(UI.PnlMenu, 'Text', '1. Adquisición de Datos (UDP)', 'FontSize', 18, 'Position', [400, 450, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAdq));
+    uibutton(UI.PnlMenu, 'Text', '2. Analizador Clínico (SPI)', 'FontSize', 18, 'Position', [400, 350, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAna));
     
     gAdq = uigridlayout(UI.PnlAdq, [6, 3], 'RowHeight', {'1x', '1x', 80, 70, 60, 60}, 'Padding', 20);
     
@@ -106,7 +96,6 @@ function AVA_Core_System()
     UI.lineaSVM = animatedline(UI.axSVM_TR, 'Color', [0 0.4 1], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     
     pnlVit = uigridlayout(gAdq, [1, 2]); pnlVit.Layout.Row = 3; pnlVit.Layout.Column = [1 3];
-    
     UI.lblSPO2 = uilabel(pnlVit, 'Text', '--% SpO2', 'FontSize', 45, 'FontWeight', 'bold', 'FontColor', [0 0.4 0.8], 'HorizontalAlignment', 'center'); 
     UI.lblBPM  = uilabel(pnlVit, 'Text', '-- BPM', 'FontSize', 45, 'FontWeight', 'bold', 'HorizontalAlignment', 'center'); 
     
@@ -125,12 +114,9 @@ function AVA_Core_System()
     btnExp.Layout.Row = 6; btnExp.Layout.Column = 3;
     
     gAna = uigridlayout(UI.PnlAna, [2, 1], 'RowHeight', {45, '1x'}, 'Padding', 5);
-    gToolbar = uigridlayout(gAna, [1, 10], 'ColumnWidth', {120, 120, 120, 40, 80, 80, 60, '1x', 140, 80}, 'Padding', 2);
+    gToolbar = uigridlayout(gAna, [1, 9], 'ColumnWidth', {120, 40, 80, 80, 60, '1x', 140, 80, 80}, 'Padding', 2);
     
     uibutton(gToolbar, 'Text', '📁 Cargar CSV', 'FontSize', 12, 'ButtonPushedFcn', @(src, event) cargarArchivo('DATOS'));
-    uibutton(gToolbar, 'Text', '📝 Cargar TXT', 'FontSize', 12, 'ButtonPushedFcn', @(src, event) cargarArchivo('ANOT'));
-    UI.lblArchivoData = uilabel(gToolbar, 'Text', '...', 'FontSize', 9, 'FontColor', [0.4 0.4 0.4], 'WordWrap', 'off');
-    
     uilabel(gToolbar, 'Text', '|', 'HorizontalAlignment', 'center');
     uibutton(gToolbar, 'Text', '<< Ant', 'FontSize', 12, 'ButtonPushedFcn', @(src, event) navegarEpisodios(-1));
     uibutton(gToolbar, 'Text', 'Sig >>', 'FontSize', 12, 'ButtonPushedFcn', @(src, event) navegarEpisodios(1));
@@ -147,40 +133,40 @@ function AVA_Core_System()
         try
             if Estado.Capturando 
                 
-                % 1. PROCESAR BÍCEPS (Batch de N muestras) - 5 Columnas Esperadas
-                lineasB = leerYValidarBatch(Red.UdpBiceps, 5); 
-                if ~isempty(lineasB)
-                    if Estado.T0_Unix == -1
-                        Estado.T0_Unix = lineasB(1,1); 
-                        logSistema('INFO', ['T0 Sincronizado: ', num2str(Estado.T0_Unix)]);
-                    end
+                % 1. LEER BUFFERS (BATCHING)
+                lineasB = leerYValidarBatch(Red.UdpBiceps, 5); % UNIX_S, UNIX_US, R, IR, CRC
+                lineasT = leerYValidarBatch(Red.UdpTobillo, 7); % UNIX_S, UNIX_US, Ax, Ay, Az, EMG, CRC
+                
+                % 2. SINCRONIZACIÓN T0_UNIX ABSOLUTA Y ROBUSTA
+                if Estado.T0_Unix == -1
+                    t0_b = inf; t0_t = inf;
+                    if ~isempty(lineasB), t0_b = lineasB(1,1); end
+                    if ~isempty(lineasT), t0_t = lineasT(1,1); end
                     
+                    if min(t0_b, t0_t) ~= inf
+                        Estado.T0_Unix = min(t0_b, t0_t);
+                        logSistema('INFO', ['T0 Global Sincronizado: ', num2str(Estado.T0_Unix, '%.6f')]);
+                    end
+                end
+
+                % 3. PROCESAR BÍCEPS
+                if ~isempty(lineasB) && Estado.T0_Unix ~= -1
                     for i = 1:size(lineasB, 1)
                         datosB = lineasB(i,:);
-                        if datosB(1) < Estado.T0_Unix
-                            logSistema('WARN', 'Timestamp retrasado detectado en Bíceps');
-                            continue;
-                        end
+                        if datosB(1) < Estado.T0_Unix, continue; end % Descartar paquetes del pasado
+                        
                         Estado.Vitales.BufferRed = [Estado.Vitales.BufferRed(2:end), datosB(2)]; 
                         Estado.Vitales.BufferIR  = [Estado.Vitales.BufferIR(2:end), datosB(3)];
                         Estado.DedoDetectado = (datosB(3) > Config.Umbrales.IR_Minimo_Dedo);
                     end
                 end
 
-                % 2. PROCESAR TOBILLO (Batch de N muestras) - 7 Columnas Esperadas
-                lineasT = leerYValidarBatch(Red.UdpTobillo, 7); 
-                if ~isempty(lineasT)
-                    if Estado.T0_Unix == -1
-                        Estado.T0_Unix = lineasT(1,1); 
-                        logSistema('INFO', ['T0 Sincronizado: ', num2str(Estado.T0_Unix)]);
-                    end
-                    
+                % 4. PROCESAR TOBILLO
+                if ~isempty(lineasT) && Estado.T0_Unix ~= -1
                     for i = 1:size(lineasT, 1)
                         datosT = lineasT(i,:);
-                        if datosT(1) < Estado.T0_Unix
-                            logSistema('WARN', 'Timestamp retrasado detectado en Tobillo');
-                            continue;
-                        end
+                        if datosT(1) < Estado.T0_Unix, continue; end
+                        
                         tRelativo = datosT(1) - Estado.T0_Unix;
                         
                         % EMG y Promedio
@@ -196,7 +182,7 @@ function AVA_Core_System()
                         
                         contraccionActual = (salto > Config.Umbrales.EMG_Contraccion) && (svmAC > Config.Umbrales.SVM_Movimiento);
                         
-                        % Interfaz Grafica Rápida
+                        % Interfaz Gráfica (Refresco controlado)
                         BufferGrafica.T(BufferGrafica.Idx) = tRelativo;
                         BufferGrafica.EMG(BufferGrafica.Idx) = salto;
                         BufferGrafica.SVM(BufferGrafica.Idx) = svm;
@@ -427,7 +413,7 @@ function AVA_Core_System()
         end
         
         try
-            numPaquetes = min(puerto.NumDatagramsAvailable, 50);
+            numPaquetes = min(puerto.NumDatagramsAvailable, 50); % Evita flood
             paquetes = read(puerto, numPaquetes); 
         catch
             return;
@@ -435,9 +421,6 @@ function AVA_Core_System()
         
         for p = 1:numPaquetes
             payload = char(paquetes(p).Data);
-            
-            % Descomentar la siguiente línea si deseas ver los paquetes crudos en consola (puede causar lag si son muchos)
-            % disp(['[', num2str(puerto.LocalPort), '] Rx: ', payload]);
             
             lineas = strsplit(payload, '\n'); 
             
@@ -447,7 +430,6 @@ function AVA_Core_System()
                 
                 partes = strsplit(strLine, ',');
                 if length(partes) ~= expectedCols
-                    disp(['[WARN] Cols incorrectas. Esperadas: ', num2str(expectedCols), ' Recibidas: ', num2str(length(partes))]);
                     continue;
                 end
                 
@@ -456,7 +438,6 @@ function AVA_Core_System()
                 
                 crcCalculado = m_crc16(msgOriginal);
                 if ~strcmp(crcCalculado, crcRecibidoStr)
-                    disp(['[WARN] CRC Fallido. Recibido: ', crcRecibidoStr, ' Esperado: ', crcCalculado]);
                     continue;
                 end
                 
@@ -465,10 +446,10 @@ function AVA_Core_System()
                     continue;
                 end
                 
-                % Reconstruir tiempo UNIX exacto sumando los microsegundos
+                % Reconstruir tiempo UNIX exacto
                 if expectedCols >= 5 && length(nums) >= 2
                     nums(1) = nums(1) + nums(2) / 1e6;
-                    nums(2) = []; 
+                    nums(2) = []; % La matriz pierde 1 columna, los índices se ajustan automáticamente
                 end
                 
                 dataOut = [dataOut; nums]; %#ok<AGROW>
@@ -477,6 +458,7 @@ function AVA_Core_System()
     end
 
     function crcHex = m_crc16(data)
+        % Correcta implementación Modbus RTU 0xA001
         crc = uint16(hex2dec('FFFF'));
         bytes = uint8(char(data)); 
         for i = 1:length(bytes)
@@ -504,7 +486,7 @@ function AVA_Core_System()
     end
 
     function [vT, vE, vS, vSp, vB] = leerCSVEnChunks(archivo)
-        chunkMuestras = 10000; 
+        chunkMuestras = 10000; % Reducido para mejor manejo de RAM
         vT=[]; vE=[]; vS=[]; vSp=[]; vB=[];
         
         if ~isfile(archivo)
@@ -547,7 +529,7 @@ function AVA_Core_System()
             if size(chunk,2)>=4, vSp=[vSp; chunk(1:idxC,4)]; end
             if size(chunk,2)>=5, vB=[vB; chunk(1:idxC,5)]; end
             
-            clear chunk;
+            clear chunk; % Libera RAM explícitamente por bloque
         end
         fclose(fid);
         vT=vT(:); vE=vE(:); vS=vS(:); vSp=vSp(:); vB=vB(:);
@@ -603,6 +585,7 @@ function AVA_Core_System()
             return;
         end
         
+        % Detección de picos mejorada en el canal IR (PPG)
         bI_AC = bI - mean(bI);
         bI_norm = bI_AC / (std(bI_AC) + eps);
         
@@ -627,6 +610,7 @@ function AVA_Core_System()
             end
         end
         
+        % Cálculo de SpO2 (simplificado AC/DC)
         bR_AC = bR - mean(bR);
         acR = std(bR_AC);
         dcR = mean(abs(bR));
