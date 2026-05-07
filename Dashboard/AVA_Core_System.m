@@ -24,7 +24,7 @@ function AVA_Core_System()
     
     % Umbrales 
     Config.Umbrales.IR_Minimo_Dedo = 3000;
-    Config.Umbrales.EMG_Contraccion = 150; % Umbral estático sobre el promedio
+    Config.Umbrales.EMG_Contraccion = 150; 
     Config.Umbrales.SVM_Movimiento = 0.4;  
     
     Config.Filtros.Alpha_Base = 0.001; 
@@ -62,8 +62,9 @@ function AVA_Core_System()
     
     Estado.Vitales.SPO2 = 98;
     Estado.Vitales.BPM = 70;
-    Estado.Vitales.BufferRed = zeros(1, Config.Muestreo.Fs_Hz * 10); 
-    Estado.Vitales.BufferIR  = zeros(1, Config.Muestreo.Fs_Hz * 10);
+    % Buffer extendido a 30 segundos para mayor robustez
+    Estado.Vitales.BufferRed = zeros(1, Config.Muestreo.Fs_Hz * 30); 
+    Estado.Vitales.BufferIR  = zeros(1, Config.Muestreo.Fs_Hz * 30);
     
     Estado.UI.ContraccionPrevia = false;
     Estado.UI.MuestrasRecibidas = 0;
@@ -73,7 +74,6 @@ function AVA_Core_System()
     
     BufferGrafica = struct('T', zeros(1, 300), 'EMG', zeros(1, 300), 'SVM', zeros(1, 300), 'Idx', 1, 'Count', 0);
     
-    % Estructura de Análisis Simplificada
     Analisis = struct('T', [], 'Anotaciones', [], 'EventosPLM', [], 'IdxNav', 0, 'TotPLM', 0, 'TotEpisodios', 0);
     Archivos = struct('Senales', "", 'Anotaciones', "");
     Red = struct('UdpTobillo', [], 'UdpBiceps', []);
@@ -81,7 +81,7 @@ function AVA_Core_System()
     limpiezaCierre = onCleanup(@() liberarRecursos(Red));
     
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
-    logSistema('INFO', 'Iniciando AVA Nexus V6.5 Medical Grade - DIAGNÓSTICO UDP');
+    logSistema('INFO', 'Iniciando AVA Nexus V6.5 Medical Grade');
     UI = struct();
     UI.Fig = uifigure('Name', 'AVA Nexus V6.5 | Medical Edition', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @(src, event) cerrarAplicacion(src, event);
@@ -147,26 +147,40 @@ function AVA_Core_System()
         try
             if Estado.Capturando 
                 
-                % 1. PROCESAR BÍCEPS (Batch de N muestras)
-                lineasB = leerYValidarBatch(Red.UdpBiceps, 4); % Espera: UNIX, R, IR, CRC
+                % 1. PROCESAR BÍCEPS (Batch de N muestras) - 5 Columnas Esperadas
+                lineasB = leerYValidarBatch(Red.UdpBiceps, 5); 
                 if ~isempty(lineasB)
-                    if Estado.T0_Unix == -1, Estado.T0_Unix = lineasB(1,1); end
+                    if Estado.T0_Unix == -1
+                        Estado.T0_Unix = lineasB(1,1); 
+                        logSistema('INFO', ['T0 Sincronizado: ', num2str(Estado.T0_Unix)]);
+                    end
                     
                     for i = 1:size(lineasB, 1)
                         datosB = lineasB(i,:);
+                        if datosB(1) < Estado.T0_Unix
+                            logSistema('WARN', 'Timestamp retrasado detectado en Bíceps');
+                            continue;
+                        end
                         Estado.Vitales.BufferRed = [Estado.Vitales.BufferRed(2:end), datosB(2)]; 
                         Estado.Vitales.BufferIR  = [Estado.Vitales.BufferIR(2:end), datosB(3)];
                         Estado.DedoDetectado = (datosB(3) > Config.Umbrales.IR_Minimo_Dedo);
                     end
                 end
 
-                % 2. PROCESAR TOBILLO (Batch de N muestras)
-                lineasT = leerYValidarBatch(Red.UdpTobillo, 6); % Espera: UNIX, Ax, Ay, Az, EMG, CRC
+                % 2. PROCESAR TOBILLO (Batch de N muestras) - 7 Columnas Esperadas
+                lineasT = leerYValidarBatch(Red.UdpTobillo, 7); 
                 if ~isempty(lineasT)
-                    if Estado.T0_Unix == -1, Estado.T0_Unix = lineasT(1,1); end
+                    if Estado.T0_Unix == -1
+                        Estado.T0_Unix = lineasT(1,1); 
+                        logSistema('INFO', ['T0 Sincronizado: ', num2str(Estado.T0_Unix)]);
+                    end
                     
                     for i = 1:size(lineasT, 1)
                         datosT = lineasT(i,:);
+                        if datosT(1) < Estado.T0_Unix
+                            logSistema('WARN', 'Timestamp retrasado detectado en Tobillo');
+                            continue;
+                        end
                         tRelativo = datosT(1) - Estado.T0_Unix;
                         
                         % EMG y Promedio
@@ -256,7 +270,7 @@ function AVA_Core_System()
     function alternarCaptura()
         Estado.Capturando = ~Estado.Capturando;
         if Estado.Capturando
-            Estado.T0_Unix = -1; % RESET TIEMPO UNIX
+            Estado.T0_Unix = -1;
             Estado.PrimeraTramaTobillo = false; Estado.PrimeraTramaBiceps = false;
             Estado.Filtros.PPG_Base = 0; 
             Estado.UI.ContraccionPrevia = false; Estado.UI.MuestrasRecibidas = 0;
@@ -269,29 +283,29 @@ function AVA_Core_System()
             Analisis.T = []; Analisis.Anotaciones = []; Analisis.EventosPLM = []; Analisis.IdxNav = 0;
             
             try 
-                Red.UdpTobillo = udpport("datagram", "LocalPort", Config.Puertos.Tobillo); 
+                Red.UdpTobillo = udpport("datagram", "LocalPort", Config.Puertos.Tobillo);
+                Red.UdpTobillo.Timeout = 0.5;
                 logSistema('INFO', 'Puerto UDP Tobillo abierto.');
             catch ME
                 uialert(UI.Fig, ['Error Tobillo: ', ME.message], 'Error UDP'); 
-                Estado.Capturando = false;
-                return;
+                Estado.Capturando = false; return;
             end
             
             try 
-                Red.UdpBiceps  = udpport("datagram", "LocalPort", Config.Puertos.Biceps); 
+                Red.UdpBiceps  = udpport("datagram", "LocalPort", Config.Puertos.Biceps);
+                Red.UdpBiceps.Timeout = 0.5;
                 logSistema('INFO', 'Puerto UDP Bíceps abierto.');
             catch ME
                 clear Red.UdpTobillo; 
                 uialert(UI.Fig, ['Error Bíceps: ', ME.message], 'Error UDP'); 
-                Estado.Capturando = false;
-                return;
+                Estado.Capturando = false; return;
             end
             
             UI.lblInfo.Text = "ACTIVO"; UI.lblInfo.FontColor = [0 0.5 0];
             clearpoints(UI.lineaEMG); clearpoints(UI.lineaSVM); 
             
             UI.btnUDP.Text = "⏹ Detener"; UI.btnUDP.BackgroundColor = [1 0.4 0.4];
-            logSistema('INFO', 'Captura iniciada. Esperando datos UDP...');
+            logSistema('INFO', 'Captura iniciada.');
         else
             liberarRecursos(Red);
             UI.btnUDP.Text = "▶ Conectar Hardware"; UI.btnUDP.BackgroundColor = [0.2 0.6 0.2];
@@ -412,49 +426,63 @@ function AVA_Core_System()
             return; 
         end
         
-        numPaquetes = puerto.NumDatagramsAvailable;
-        paquetes = read(puerto, numPaquetes); 
+        try
+            numPaquetes = min(puerto.NumDatagramsAvailable, 50);
+            paquetes = read(puerto, numPaquetes); 
+        catch
+            return;
+        end
         
         for p = 1:numPaquetes
             payload = char(paquetes(p).Data);
             
-            % --- ¡IMPRIMIR EN CONSOLA LO QUE LLEGA! ---
-            disp(['[', num2str(puerto.LocalPort), '] Recibido: ', payload]); 
+            % Descomentar la siguiente línea si deseas ver los paquetes crudos en consola (puede causar lag si son muchos)
+            % disp(['[', num2str(puerto.LocalPort), '] Rx: ', payload]);
             
             lineas = strsplit(payload, '\n'); 
             
             for i = 1:length(lineas)
                 strLine = strtrim(lineas{i});
-                if isempty(strLine), continue; end
+                if isempty(strLine) || startsWith(strLine, '#'), continue; end
                 
                 partes = strsplit(strLine, ',');
-                if length(partes) == expectedCols
-                    crcRecibidoStr = partes{end};
-                    msgOriginal = strjoin(partes(1:end-1), ',');
-                    
-                    crcCalculado = m_crc16(msgOriginal);
-                    if strcmp(crcCalculado, crcRecibidoStr)
-                        nums = str2double(partes(1:end-1));
-                        if ~any(isnan(nums))
-                            dataOut = [dataOut; nums]; %#ok<AGROW>
-                        end
-                    else
-                        disp(['[WARN] CRC Fallido. Recibido: ', crcRecibidoStr, ' Esperado: ', crcCalculado]);
-                    end
-                else
-                    disp(['[WARN] Cols incorrectas. Exp: ', num2str(expectedCols), ' Rx: ', num2str(length(partes))]);
+                if length(partes) ~= expectedCols
+                    disp(['[WARN] Cols incorrectas. Esperadas: ', num2str(expectedCols), ' Recibidas: ', num2str(length(partes))]);
+                    continue;
                 end
+                
+                crcRecibidoStr = partes{end};
+                msgOriginal = strjoin(partes(1:end-1), ',');
+                
+                crcCalculado = m_crc16(msgOriginal);
+                if ~strcmp(crcCalculado, crcRecibidoStr)
+                    disp(['[WARN] CRC Fallido. Recibido: ', crcRecibidoStr, ' Esperado: ', crcCalculado]);
+                    continue;
+                end
+                
+                nums = str2double(partes(1:end-1));
+                if any(isnan(nums))
+                    continue;
+                end
+                
+                % Reconstruir tiempo UNIX exacto sumando los microsegundos
+                if expectedCols >= 5 && length(nums) >= 2
+                    nums(1) = nums(1) + nums(2) / 1e6;
+                    nums(2) = []; 
+                end
+                
+                dataOut = [dataOut; nums]; %#ok<AGROW>
             end
         end
     end
 
     function crcHex = m_crc16(data)
         crc = uint16(hex2dec('FFFF'));
-        bytes = uint8(char(data)); % <-- FORZADO A CHAR
+        bytes = uint8(char(data)); 
         for i = 1:length(bytes)
             crc = bitxor(crc, uint16(bytes(i)));
             for j = 1:8
-                if bitand(crc, 1)
+                if bitand(crc, uint16(1))
                     crc = bitxor(bitshift(crc, -1), uint16(hex2dec('A001')));
                 else
                     crc = bitshift(crc, -1);
@@ -476,16 +504,26 @@ function AVA_Core_System()
     end
 
     function [vT, vE, vS, vSp, vB] = leerCSVEnChunks(archivo)
-        chunkMuestras = 15000; 
+        chunkMuestras = 10000; 
         vT=[]; vE=[]; vS=[]; vSp=[]; vB=[];
+        
+        if ~isfile(archivo)
+            logSistema('ERROR', ['Archivo no existe: ', archivo]);
+            return;
+        end
         
         fid = fopen(archivo, 'r'); 
         if fid < 0, return; end
-        fgetl(fid); 
         
         while ~feof(fid)
-            chunk = zeros(chunkMuestras, 6); 
+            lin = fgetl(fid);
+            if ~ischar(lin) || ~startsWith(lin, '#'), break; end
+        end
+        
+        while ~feof(fid)
+            chunk = nan(chunkMuestras, 6); 
             idxC = 0;
+            
             for i = 1:chunkMuestras
                 lin = fgetl(fid); 
                 if ~ischar(lin), break; end
@@ -493,19 +531,23 @@ function AVA_Core_System()
                 
                 try
                     v = str2double(strsplit(lin, ','));
-                    if length(v) >= 2 && ~isnan(v(1)) && ~isnan(v(2))
+                    if ~isnan(v(1)) && ~isnan(v(2))
                         idxC = idxC + 1;
-                        if idxC > size(chunk, 1), chunk = [chunk; zeros(5000, 6)]; end %#ok<AGROW>
                         chunk(idxC, 1:min(length(v), 6)) = v(1:min(length(v), 6));
                     end
                 catch
                 end
             end
+            
             if idxC == 0, break; end
-            vT=[vT; chunk(1:idxC,1)]; vE=[vE; chunk(1:idxC,2)]; 
+            
+            vT=[vT; chunk(1:idxC,1)]; 
+            vE=[vE; chunk(1:idxC,2)]; 
             if size(chunk,2)>=3, vS=[vS; chunk(1:idxC,3)]; end
             if size(chunk,2)>=4, vSp=[vSp; chunk(1:idxC,4)]; end
             if size(chunk,2)>=5, vB=[vB; chunk(1:idxC,5)]; end
+            
+            clear chunk;
         end
         fclose(fid);
         vT=vT(:); vE=vE(:); vS=vS(:); vSp=vSp(:); vB=vB(:);
@@ -554,22 +596,46 @@ function AVA_Core_System()
         end
     end
 
-    function [s, b] = detectarBPMRobusto(bR, bI, fs)
-        s = 95; b = 70; 
-        bR_AC = bR - mean(bR); bI_AC = bI - mean(bI);
-        acR = std(bR_AC); dcR = mean(abs(bR)); acI = std(bI_AC); dcI = mean(abs(bI));
-        if dcR == 0 || dcI == 0, return; end
-        R = (acR / dcR) / (acI / dcI); s = max(85, min(99, 110 - 25 * R));
-        if length(bI_AC) < 2 * fs, return; end
-        try
-            bI_norm = (bI_AC - mean(bI_AC)) / (std(bI_AC) + eps);
-            umbral = std(bI_norm) * 0.3;
-            picos = find(bI_norm(2:end-1) > bI_norm(1:end-2) & bI_norm(2:end-1) > bI_norm(3:end) & bI_norm(2:end-1) > umbral) + 1;
-            if length(picos) > 2
-                intProm = mean(diff(picos)) / fs; bpmCalc = 60 / intProm;
-                if bpmCalc >= 30 && bpmCalc <= 220, b = bpmCalc; end
+    function [spo2, bpm] = detectarBPMRobusto(bR, bI, fs)
+        spo2 = 95; bpm = 70;
+        
+        if length(bR) < fs || length(bI) < fs
+            return;
+        end
+        
+        bI_AC = bI - mean(bI);
+        bI_norm = bI_AC / (std(bI_AC) + eps);
+        
+        umbral = 0.5 * std(bI_norm);
+        picos = [];
+        
+        for idx = 2:(length(bI_norm)-1)
+            if bI_norm(idx) > bI_norm(idx-1) && ...
+               bI_norm(idx) > bI_norm(idx+1) && ...
+               bI_norm(idx) > umbral
+                picos = [picos, idx];
             end
-        catch
+        end
+        
+        if length(picos) > 3
+            intProm = mean(diff(picos)) / fs;
+            if intProm > 0
+                bpmCalc = 60 / intProm;
+                if bpmCalc >= 40 && bpmCalc <= 200
+                    bpm = bpmCalc;
+                end
+            end
+        end
+        
+        bR_AC = bR - mean(bR);
+        acR = std(bR_AC);
+        dcR = mean(abs(bR));
+        acI = std(bI_AC);
+        dcI = mean(abs(bI));
+        
+        if dcR > 0 && dcI > 0
+            R = (acR / (dcR + eps)) / (acI / (dcI + eps));
+            spo2 = max(85, min(99, 110 - 25 * R));
         end
     end
     
@@ -585,6 +651,7 @@ function AVA_Core_System()
         
         fl = diff([0; fus; 0]); iI = find(fl==1); iF = find(fl==-1)-1;
         
+        % 1. Fusión de micro-cortes (<0.5s)
         iIU = []; iFU = [];
         if ~isempty(iI)
             cA = iI(1); cF = iF(1);
@@ -595,12 +662,14 @@ function AVA_Core_System()
             iIU(end+1,1)=cA; iFU(end+1,1)=cF;
         end
         
+        % 2. Regla de Duración (0.5s a 10s)
         mPlm_Candidatos = []; 
         for i = 1:length(iIU)
             dur = (iFU(i) - iIU(i)) / fs; 
             if dur >= 0.5 && dur <= 10.0, mPlm_Candidatos = [mPlm_Candidatos; iIU(i), iFU(i)]; end %#ok<AGROW>
         end
         
+        % 3. REGLA DE 4 Y SEPARACIÓN (5s a 90s)
         mEpi = []; 
         validosPLM = []; 
         
@@ -624,6 +693,7 @@ function AVA_Core_System()
             end
         end
         
+        % 4. Generar máscara final solo con eventos válidos
         anotFinal = zeros(length(t), 1); 
         for k = 1:size(validosPLM,1), anotFinal(validosPLM(k,1):validosPLM(k,2)) = 1; end
         anotFinal = anotFinal(:); 
