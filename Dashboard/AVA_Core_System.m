@@ -47,7 +47,7 @@ function AVA_Core_System()
     
     Estado = struct();
     Estado.Capturando = false;
-    Estado.T0_Unix = -1; % NUEVO: Sincronización absoluta
+    Estado.T0_Unix = -1; % Sincronización absoluta
     Estado.PrimeraTramaTobillo = false;
     Estado.PrimeraTramaBiceps = false;
     Estado.DedoDetectado = false; 
@@ -358,7 +358,7 @@ function AVA_Core_System()
             if dtReal <= 0 || isnan(dtReal), uialert(UI.Fig, 'Tiempos nulos o corruptos detectados.', 'Error'); return; end
             fsReal = 1 / dtReal;
             
-            % Siempre aplicamos AASM al crudo cargado 
+            % Siempre aplicamos AASM al crudo cargado
             [Analisis.Anotaciones, mEpi, validosPLM] = procesarAASM(vT, vEMG, vSVM, fsReal, Config);
             
             totPLM = size(validosPLM, 1);
