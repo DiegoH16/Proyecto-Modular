@@ -1,7 +1,7 @@
 /*
- * DISPOSITIVO TOBILLO: MPU6050 + EMG (V3.2 OFFLINE AP MODE)
+ * DISPOSITIVO TOBILLO: MPU6050 + EMG (V3.2 OFFLINE AP MODE FINAL)
  * Funciona como Router (Access Point). No requiere Internet.
- * Envía: Timestamp_UNIX, Ax, Ay, Az, EMG_RAW, CRC16\n
+ * Envía: Timestamp_UNIX_sec, Timestamp_UNIX_usec, Ax, Ay, Az, EMG_RAW, CRC16\n
  */
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
@@ -11,14 +11,11 @@
 #include <sys/time.h>
 
 // --- CONFIGURACIÓN DE RED (MODO PUNTO DE ACCESO) ---
-const char* ssid = "AVA_NEXUS";       // Nombre de la red Wi-Fi que creará el Tobillo
+const char* ssid = "AVA_NEXUS";        // Nombre de la red Wi-Fi que creará el Tobillo
 const char* password = "ava_password"; // Contraseña de la red
 
 // ⚠️ MUY IMPORTANTE: IP DE TU COMPUTADORA ⚠️
-// Cuando tu PC se conecte a "AVA_NEXUS", el ESP32 le asignará una IP.
 // Por defecto, al primer dispositivo en conectarse le suele dar la 192.168.4.2
-// Si en MATLAB no recibes datos, abre la consola (cmd), escribe "ipconfig" 
-// y verifica cuál es tu dirección IPv4 en la red AVA_NEXUS, luego actualiza este valor:
 const char* ip_matlab = "192.168.4.2"; 
 
 const int puerto_datos = 8888;
@@ -63,12 +60,12 @@ void setup() {
   delay(500);
   
   Serial.println("[OK] Red AVA_NEXUS Creada!");
-  Serial.print("IP del Tobillo: ");
+  Serial.print("IP del Tobillo (Router): ");
   Serial.println(WiFi.softAPIP()); // Normalmente será 192.168.4.1
 
   // --- INICIALIZACIÓN DE HARDWARE ---
   Wire.begin(21, 22);
-  Wire.setClock(400000); // 400kHz Fast I2C
+  Wire.setClock(400000); // 400kHz Fast I2C para el MPU6050
 
   if (!mpu.begin()) {
     Serial.println("[ERROR] MPU6050 no encontrado!");
@@ -84,7 +81,8 @@ void setup() {
   // --- SYNC INICIAL A MATLAB ---
   struct timeval tv; gettimeofday(&tv, NULL);
   char sync_msg[100];
-  snprintf(sync_msg, sizeof(sync_msg), "SYNC,TOBILLO,%lld.%06ld\n", (long long)tv.tv_sec, (long)tv.tv_usec);
+  // SEPARADO POR COMA: Segundos, Microsegundos
+  snprintf(sync_msg, sizeof(sync_msg), "SYNC,TOBILLO,%lld,%06ld\n", (long long)tv.tv_sec, (long)tv.tv_usec);
   udp_control.beginPacket(ip_matlab, puerto_control);
   udp_control.print(sync_msg);
   udp_control.endPacket();
@@ -108,16 +106,21 @@ void loop() {
     float az = a.acceleration.z;
     int emg_raw = analogRead(PIN_EMG);
 
+    // Compuerta de seguridad de aceleración (Descartar ruido extremo)
     if (abs(ax) > 40.0 || abs(ay) > 40.0 || abs(az) > 40.0) return;
 
     struct timeval tv;
     gettimeofday(&tv, NULL);
 
     char linea[128];
-    int len = snprintf(linea, sizeof(linea), "%lld.%06ld,%.2f,%.2f,%.2f,%d", 
+    // SEPARADO POR COMA: Segundos, Microsegundos, Ax, Ay, Az, EMG
+    int len = snprintf(linea, sizeof(linea), "%lld,%06ld,%.2f,%.2f,%.2f,%d", 
                        (long long)tv.tv_sec, (long)tv.tv_usec, ax, ay, az, emg_raw);
 
+    // Calcular CRC16
     uint16_t crc = crc16(linea, len);
+    
+    // Anexar al payload estático
     int added = snprintf(payload + payload_len, sizeof(payload) - payload_len, "%s,%04X\n", linea, crc);
     
     if (added > 0 && added < (sizeof(payload) - payload_len)) {
@@ -126,14 +129,15 @@ void loop() {
 
     contador++;
 
+    // Enviar lote de 5 muestras (Batching)
     if (contador >= TAMANO_LOTE) {
       udp_datos.beginPacket(ip_matlab, puerto_datos);
       udp_datos.write((const uint8_t*)payload, payload_len);
       udp_datos.endPacket();
 
-      payload_len = 0; contador = 0; 
+      payload_len = 0; contador = 0; // Reset
     }
   }
   
-  yield(); 
+  yield(); // Mantener estable el stack Wi-Fi
 }
