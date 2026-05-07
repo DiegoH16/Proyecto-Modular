@@ -12,21 +12,23 @@ function AVA_Core_System()
     Config = struct();
     Config.Puertos.Tobillo = 8888; 
     Config.Puertos.Biceps  = 8889; 
-    Config.Puertos.Control = 9999; % ✅ NUEVO: Puerto para mensajes SYNC
+    Config.Puertos.Control = 9999; 
     Config.Muestreo.Fs_Hz  = 50; 
     Config.Muestreo.VentanaGrafica_s = 60; 
     
-    % Buffer Seguro de 10 Horas
     Config.BufferMax.Horas = 10;
     Config.BufferMax.Muestras = Config.Muestreo.Fs_Hz * 3600 * Config.BufferMax.Horas; 
-    
     Config.UI.RefrescoGraficas_Muestras = 5; 
     Config.Backup.MuestrasIntervalo = Config.Muestreo.Fs_Hz * 300;
     
     Config.Umbrales.IR_Minimo_Dedo = 3000;
-    Config.Umbrales.EMG_Contraccion = 150; 
+    Config.Umbrales.EMG_Contraccion = 50; % Reducido porque la envolvente RMS es más pequeña y limpia
     Config.Umbrales.SVM_Movimiento = 0.4;  
-    Config.Filtros.Alpha_Base = 0.001; 
+    
+    % Constantes para Filtros IIR DSP
+    Config.Filtros.Alpha_SVM = 0.005; % Pasa-altos muy lento para gravedad
+    Config.Filtros.Alpha_EMG_HP = 0.1; % Pasa-altos para EMG (elimina deriva)
+    Config.Filtros.Alpha_EMG_LP = 0.15; % Pasa-bajos para Envolvente (suavizado)
     
     %% --- 2. ESTADO GLOBAL Y RING BUFFER ---
     RingBuffer = struct();
@@ -42,18 +44,16 @@ function AVA_Core_System()
     
     Estado = struct();
     Estado.Capturando = false;
-    
-    % ✅ NUEVO: Variables para Sincronización Real
     Estado.OffsetTobillo = NaN;
     Estado.OffsetBiceps = NaN;
     Estado.T0_Global = -1; 
-    
     Estado.DedoDetectado = false; 
     Estado.UltimoBackupIdx = 1;
     
-    Estado.EMG_Promedio = 0;
-    Estado.EMG_Muestras = 0;
-    Estado.Filtros.SVM_Base = 1;    
+    % --- DSP STATE ---
+    Estado.DSP.EMG_Baseline = 0;
+    Estado.DSP.EMG_Envelope = 0;
+    Estado.DSP.SVM_Baseline = 1.0;    
     
     Estado.Vitales.SPO2 = 98;
     Estado.Vitales.BPM = 70;
@@ -73,9 +73,9 @@ function AVA_Core_System()
     limpiezaCierre = onCleanup(@() liberarRecursos(Red));
     
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
-    logSistema('INFO', 'Iniciando AVA Nexus V6.7 | Sync & DSP Optimization');
+    logSistema('INFO', 'Iniciando AVA Nexus V6.8 | Medical DSP Active');
     UI = struct();
-    UI.Fig = uifigure('Name', 'AVA Nexus V6.7 | Medical Edition', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
+    UI.Fig = uifigure('Name', 'AVA Nexus V6.8 | DSP Edition', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @(src, event) cerrarAplicacion(src, event);
     UI.AxesAnaLista = [];
     
@@ -83,17 +83,16 @@ function AVA_Core_System()
     UI.PnlAdq  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     UI.PnlAna  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     
-    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V6.7', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
+    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V6.8', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
     uibutton(UI.PnlMenu, 'Text', '1. Adquisición de Datos (UDP)', 'FontSize', 18, 'Position', [400, 450, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAdq));
     uibutton(UI.PnlMenu, 'Text', '2. Analizador Clínico (SPI)', 'FontSize', 18, 'Position', [400, 350, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAna));
     
     gAdq = uigridlayout(UI.PnlAdq, [6, 3], 'RowHeight', {'1x', '1x', 80, 70, 60, 60}, 'Padding', 20);
     
-    UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Tibial'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 3];
-    UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 3];
+    UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Envolvente (DSP)'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 3];
+    UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM (DSP)'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 3];
     
     numPuntosGrafica = 3000;
-    % ✅ MEJORA: Uso directo de animatedline sin buffer intermedio
     UI.lineaEMG = animatedline(UI.axEMG_TR, 'Color', [1 0.5 0], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     UI.lineaSVM = animatedline(UI.axSVM_TR, 'Color', [0 0.4 1], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     
@@ -121,7 +120,6 @@ function AVA_Core_System()
     uibutton(gToolbar, 'Text', '📁 Cargar CSV', 'FontSize', 12, 'ButtonPushedFcn', @(src, event) cargarArchivo('DATOS'));
     uibutton(gToolbar, 'Text', '📝 Cargar TXT', 'FontSize', 12, 'ButtonPushedFcn', @(src, event) cargarArchivo('ANOT'));
     
-    % ✅ MEJORA: Restaurada la etiqueta de archivo perdida
     UI.lblArchivoData = uilabel(gToolbar, 'Text', '...', 'FontSize', 9, 'FontColor', [0.4 0.4 0.4], 'WordWrap', 'off');
     
     uilabel(gToolbar, 'Text', '|', 'HorizontalAlignment', 'center');
@@ -140,7 +138,6 @@ function AVA_Core_System()
         try
             if Estado.Capturando 
                 
-                % ✅ 1. LEER PUERTO DE CONTROL (SYNC)
                 if isvalid(Red.UdpControl) && Red.UdpControl.NumDatagramsAvailable > 0
                     paquetesSync = read(Red.UdpControl, Red.UdpControl.NumDatagramsAvailable);
                     for ps = 1:length(paquetesSync)
@@ -148,53 +145,40 @@ function AVA_Core_System()
                         partes = strsplit(strtrim(txt), ',');
                         if length(partes) >= 4 && strcmp(partes{1}, 'SYNC')
                             devTime = str2double(partes{3}) + (str2double(partes{4}) / 1e6);
-                            localTime = posixtime(datetime('now')); % Tiempo UTC de la PC
-                            
+                            localTime = posixtime(datetime('now'));
                             if strcmp(partes{2}, 'TOBILLO') && isnan(Estado.OffsetTobillo)
                                 Estado.OffsetTobillo = localTime - devTime;
-                                logSistema('INFO', sprintf('Offset Tobillo fijado: %.4f s', Estado.OffsetTobillo));
                             elseif strcmp(partes{2}, 'BICEPS') && isnan(Estado.OffsetBiceps)
                                 Estado.OffsetBiceps = localTime - devTime;
-                                logSistema('INFO', sprintf('Offset Bíceps fijado: %.4f s', Estado.OffsetBiceps));
                             end
                         end
                     end
                 end
 
-                % 2. LEER BUFFERS DE DATOS
                 lineasB = leerYValidarBatch(Red.UdpBiceps, 5, true); 
                 lineasT = leerYValidarBatch(Red.UdpTobillo, 7, true); 
                 
-                % ✅ 3. APLICAR OFFSETS A LOS TIEMPOS
                 if ~isempty(lineasB)
-                    if isnan(Estado.OffsetBiceps) % Fallback si el SYNC se perdió
+                    if isnan(Estado.OffsetBiceps) 
                         Estado.OffsetBiceps = posixtime(datetime('now')) - lineasB(1,1);
-                        logSistema('INFO', 'Offset Bíceps estimado por fallback.');
                     end
                     lineasB(:,1) = lineasB(:,1) + Estado.OffsetBiceps;
                 end
                 
                 if ~isempty(lineasT)
-                    if isnan(Estado.OffsetTobillo) % Fallback
+                    if isnan(Estado.OffsetTobillo) 
                         Estado.OffsetTobillo = posixtime(datetime('now')) - lineasT(1,1);
-                        logSistema('INFO', 'Offset Tobillo estimado por fallback.');
                     end
                     lineasT(:,1) = lineasT(:,1) + Estado.OffsetTobillo;
                 end
                 
-                % 4. ESTABLECER TIEMPO CERO GLOBAL DE LA GRÁFICA
                 if Estado.T0_Global == -1
                     t0s = [];
                     if ~isempty(lineasB), t0s = [t0s, lineasB(1,1)]; end
                     if ~isempty(lineasT), t0s = [t0s, lineasT(1,1)]; end
-                    
-                    if ~isempty(t0s)
-                        Estado.T0_Global = min(t0s);
-                        logSistema('INFO', ['T0 de captura iniciado: ', num2str(Estado.T0_Global, '%.4f')]);
-                    end
+                    if ~isempty(t0s), Estado.T0_Global = min(t0s); end
                 end
 
-                % 5. PROCESAR BÍCEPS
                 if ~isempty(lineasB) && Estado.T0_Global ~= -1
                     for i = 1:size(lineasB, 1)
                         datosB = lineasB(i,:);
@@ -204,30 +188,29 @@ function AVA_Core_System()
                     end
                 end
 
-                % 6. PROCESAR TOBILLO
                 if ~isempty(lineasT) && Estado.T0_Global ~= -1
                     for i = 1:size(lineasT, 1)
                         datosT = lineasT(i,:);
                         
                         tRelativo = datosT(1) - Estado.T0_Global;
-                        if tRelativo < 0, continue; end % Ignorar paquetes desfasados
+                        if tRelativo < 0, continue; end 
                         
-                        % EMG y Promedio
-                        emg = datosT(5);
-                        Estado.EMG_Muestras = Estado.EMG_Muestras + 1;
-                        Estado.EMG_Promedio = Estado.EMG_Promedio + (emg - Estado.EMG_Promedio) / Estado.EMG_Muestras;
-                        salto = abs(emg - Estado.EMG_Promedio);
+                        % ✅ DSP EMG: Filtro Pasa-Altos (Deriva) -> Rectificación -> Filtro Pasa-Bajos (Envolvente)
+                        emg_crudo = datosT(5);
+                        Estado.DSP.EMG_Baseline = (1 - Config.Filtros.Alpha_EMG_HP) * Estado.DSP.EMG_Baseline + (Config.Filtros.Alpha_EMG_HP * emg_crudo);
+                        emg_ac = abs(emg_crudo - Estado.DSP.EMG_Baseline); % Rectificación
+                        Estado.DSP.EMG_Envelope = (1 - Config.Filtros.Alpha_EMG_LP) * Estado.DSP.EMG_Envelope + (Config.Filtros.Alpha_EMG_LP * emg_ac);
                         
-                        % SVM
-                        svm = sqrt(sum(datosT(2:4).^2));
-                        Estado.Filtros.SVM_Base = ((1-Config.Filtros.Alpha_Base) * Estado.Filtros.SVM_Base) + (Config.Filtros.Alpha_Base * svm);
-                        svmAC = abs(svm - Estado.Filtros.SVM_Base);
+                        % ✅ DSP SVM: Filtro Pasa-Altos lento para aislar gravedad
+                        svm_crudo = sqrt(sum(datosT(2:4).^2));
+                        Estado.DSP.SVM_Baseline = (1 - Config.Filtros.Alpha_SVM) * Estado.DSP.SVM_Baseline + (Config.Filtros.Alpha_SVM * svm_crudo);
+                        svm_ac = abs(svm_crudo - Estado.DSP.SVM_Baseline);
                         
-                        contraccionActual = (salto > Config.Umbrales.EMG_Contraccion) && (svmAC > Config.Umbrales.SVM_Movimiento);
+                        % Detección basada en envolventes limpias
+                        contraccionActual = (Estado.DSP.EMG_Envelope > Config.Umbrales.EMG_Contraccion) && (svm_ac > Config.Umbrales.SVM_Movimiento);
                         
-                        % ✅ MEJORA: Gráfica eficiente y directa
-                        addpoints(UI.lineaEMG, tRelativo, salto);
-                        addpoints(UI.lineaSVM, tRelativo, svm);
+                        addpoints(UI.lineaEMG, tRelativo, Estado.DSP.EMG_Envelope);
+                        addpoints(UI.lineaSVM, tRelativo, svm_ac);
                         
                         if mod(Estado.UI.MuestrasRecibidas, Config.UI.RefrescoGraficas_Muestras) == 0
                             if contraccionActual ~= Estado.UI.ContraccionPrevia
@@ -241,7 +224,7 @@ function AVA_Core_System()
                             actualizarEjesGrafica([UI.axEMG_TR, UI.axSVM_TR], tRelativo, Config.Muestreo.VentanaGrafica_s);
                         end
                         
-                        % Vitales UI Update
+                        % Actualización Vitales
                         if mod(Estado.UI.MuestrasRecibidas, 50) == 0
                             [Estado.Vitales.SPO2, Estado.Vitales.BPM] = detectarBPMRobusto(Estado.Vitales.BufferRed, Estado.Vitales.BufferIR, Config.Muestreo.Fs_Hz); 
                             
@@ -250,8 +233,7 @@ function AVA_Core_System()
                                 nuevoBPM  = sprintf('%d BPM', round(Estado.Vitales.BPM));
                                 UI.lblSPO2.FontColor = [0 0.4 0.8]; 
                             else
-                                nuevoSPO2 = 'SIN DEDO'; 
-                                nuevoBPM = '--- BPM'; 
+                                nuevoSPO2 = 'SIN DEDO'; nuevoBPM = '--- BPM'; 
                                 UI.lblSPO2.FontColor = [0.8 0.2 0.2]; 
                             end
                             
@@ -272,8 +254,8 @@ function AVA_Core_System()
                             Estado.UI.MuestrasDesdeUltimoBackup = 0;
                         end
                         
-                        % Guardado seguro con tiempo UTC absoluto real
-                        guardarEnRingBuffer(datosT(1), salto, svm, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
+                        % Guardamos la Envolvente Limpia en el buffer en lugar del EMG bruto ruidoso
+                        guardarEnRingBuffer(datosT(1), Estado.DSP.EMG_Envelope, svm_ac, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
                         Estado.UI.MuestrasRecibidas = Estado.UI.MuestrasRecibidas + 1;
                     end
                 end
@@ -294,18 +276,14 @@ function AVA_Core_System()
             Estado.OffsetBiceps = NaN;
             Estado.T0_Global = -1;
             
-            Estado.PrimeraTramaTobillo = false; Estado.PrimeraTramaBiceps = false;
-            Estado.Filtros.PPG_Base = 0; 
+            Estado.DSP.EMG_Baseline = 0;
+            Estado.DSP.EMG_Envelope = 0;
+            Estado.DSP.SVM_Baseline = 1.0; 
+            
             Estado.UI.ContraccionPrevia = false; Estado.UI.MuestrasRecibidas = 0;
             Estado.UI.MuestrasDesdeUltimoBackup = 0;
-            
-            Estado.EMG_Promedio = 0;
-            Estado.EMG_Muestras = 0;
-            Estado.Filtros.SVM_Base = 1;
-            
             Analisis.T = []; Analisis.Anotaciones = []; Analisis.EventosPLM = []; Analisis.IdxNav = 0;
             
-            % ✅ MEJORA: Apertura segura del puerto de Control (SYNC)
             try
                 Red.UdpControl = udpport("datagram", "LocalPort", Config.Puertos.Control);
                 Red.UdpControl.Timeout = 0.1;
@@ -335,14 +313,11 @@ function AVA_Core_System()
             
             UI.lblInfo.Text = "ACTIVO"; UI.lblInfo.FontColor = [0 0.5 0];
             clearpoints(UI.lineaEMG); clearpoints(UI.lineaSVM); 
-            
             UI.btnUDP.Text = "⏹ Detener"; UI.btnUDP.BackgroundColor = [1 0.4 0.4];
-            logSistema('INFO', 'Captura iniciada.');
         else
             liberarRecursos(Red);
             UI.btnUDP.Text = "▶ Conectar Hardware"; UI.btnUDP.BackgroundColor = [0.2 0.6 0.2];
             UI.lblInfo.Text = "EN ESPERA"; UI.lblInfo.FontColor = [0.5 0.5 0.5];
-            logSistema('INFO', 'Captura detenida.');
         end
     end
 
@@ -355,26 +330,19 @@ function AVA_Core_System()
         if ~isfolder(rutaSalida), mkdir(rutaSalida); end
         
         backupIncrementalOptimizado(RingBuffer, Estado.UltimoBackupIdx, Config.BufferMax.Muestras); 
-        
         [t_d, emg_d, svm_d, spo2_d, bpm_d, anot_d] = descomprimirRingBufferCorregido();
         if isempty(t_d), return; end
         
         try
             nameCSV = fullfile(rutaSalida, sprintf('AVA_Estudio_%s.csv', fStr));
             nameTXT = fullfile(rutaSalida, sprintf('AVA_Anotaciones_%s.txt', fStr));
-            if isfile(nameCSV), logSistema('WARN', 'Sobrescribiendo archivo existente.'); end
             
             [anotFinal, epi, validosPLM] = procesarAASM(t_d, emg_d, svm_d, Config.Muestreo.Fs_Hz, Config);
             
-            logSistema('INFO', 'Iniciando escritura OOM-Safe de CSV...');
             fid = fopen(nameCSV, 'w');
-            if fid < 0, logSistema('ERROR', 'Permiso denegado para CSV'); return; end
-            
-            fprintf(fid, '# AVA Nexus V6.7 Estudio Polisomnográfico\n');
+            fprintf(fid, '# AVA Nexus V6.8 Estudio DSP\n');
             fprintf(fid, '# Exportado: %s\n', char(datetime('now')));
-            fprintf(fid, '# Duración: %.2f horas\n', (t_d(end) - t_d(1)) / 3600);
-            fprintf(fid, 'Time_s_UTC,EMG_uV,SVM_m_s2,SpO2_pct,BPM_bpm,AASM_SPI\n');
-            
+            fprintf(fid, 'Time_s_UTC,EMG_Env,SVM_ac,SpO2_pct,BPM_bpm,AASM_SPI\n');
             for i = 1:length(t_d)
                 fprintf(fid, '%.6f,%.6f,%.6f,%d,%d,%d\n', t_d(i), emg_d(i), svm_d(i), round(spo2_d(i)), round(bpm_d(i)), anotFinal(i));
             end
@@ -384,10 +352,8 @@ function AVA_Core_System()
             fprintf(fidTxt, 'Tiempo_s_UTC,Anot_SPI\n');
             for i = 1:length(t_d), fprintf(fidTxt, '%.6f,%d\n', t_d(i), anotFinal(i)); end
             fclose(fidTxt);
-            
-            uialert(UI.Fig, sprintf('Exportado Correctamente:\n%d muestras\nDirectorio: %s', length(t_d), rutaSalida), 'Éxito');
+            uialert(UI.Fig, sprintf('Exportado Correctamente:\n%d muestras', length(t_d)), 'Éxito');
         catch ME
-            logSistema('ERROR', ['Fallo I/O en Exportación: ', ME.message]);
             uialert(UI.Fig, sprintf('Error crítico de escritura.\nDetalle: %s', ME.message), 'Fallo Sistema');
         end
         cambiarPanel(UI.PnlMenu);
@@ -396,107 +362,65 @@ function AVA_Core_System()
     function ejecutarAnalisisPro()
         if Archivos.Senales == "", uialert(UI.Fig, 'Seleccione un CSV.', 'Aviso'); return; end
         try
-            logSistema('INFO', 'Cargando archivo masivo por chunks...');
             [vT, vEMG, vSVM, vSPO2, vBPM] = leerCSVEnChunks(Archivos.Senales);
+            if size(vT, 1) < 10, uialert(UI.Fig, 'CSV inválido.', 'Error'); return; end
             
-            if size(vT, 1) < 10, uialert(UI.Fig, 'CSV inválido o muy corto.', 'Error'); return; end
-            
-            dtReal = mean(diff(vT), 'omitnan');
-            if dtReal <= 0 || isnan(dtReal), uialert(UI.Fig, 'Tiempos nulos o corruptos detectados.', 'Error'); return; end
-            fsReal = 1 / dtReal;
-            
+            fsReal = 1 / mean(diff(vT), 'omitnan');
             [Analisis.Anotaciones, mEpi, validosPLM] = procesarAASM(vT, vEMG, vSVM, fsReal, Config);
             
-            totPLM = size(validosPLM, 1);
-            totEpisodios = size(mEpi, 1);
-            
             Analisis.EventosPLM = validosPLM; 
-            Analisis.TotPLM = totPLM;
-            Analisis.TotEpisodios = totEpisodios;
-            
+            Analisis.TotPLM = size(validosPLM, 1);
+            Analisis.TotEpisodios = size(mEpi, 1);
             Analisis.T = vT; Analisis.IdxNav = 0;
-            actualizarEtiquetaEpisodio(0, totPLM, totEpisodios);
+            actualizarEtiquetaEpisodio(0, Analisis.TotPLM, Analisis.TotEpisodios);
             
             delete(UI.pnlGraficasAna.Children); 
+            gGrid = uigridlayout(UI.pnlGraficasAna, [2 + (~isempty(vSPO2)) + (~isempty(vBPM)), 1], 'Padding', 0);
             
-            numGrafs = 2 + (~isempty(vSPO2)) + (~isempty(vBPM));
-            gGrid = uigridlayout(UI.pnlGraficasAna, [numGrafs, 1], 'Padding', 0);
-            
-            ax1 = uiaxes(gGrid); title(ax1, 'EMG + AASM (Regla de 4 Aplicada)'); hold(ax1,'on'); grid(ax1, 'on');
+            ax1 = uiaxes(gGrid); title(ax1, 'EMG Envolvente + PLM'); hold(ax1,'on'); grid(ax1, 'on');
             plot(ax1, vT, vEMG, 'Color', [0.6 0.6 0.6]); 
+            plot(ax1, vT, Analisis.Anotaciones * max(100, max(vEMG)), 'r', 'LineWidth', 1.5);
             
-            maxEmgDisplay = max(vEMG); if maxEmgDisplay < 10, maxEmgDisplay = 100; end
-            plot(ax1, vT, Analisis.Anotaciones * maxEmgDisplay, 'r', 'LineWidth', 1.5);
-            
-            ax2 = uiaxes(gGrid); title(ax2, 'SVM Actigrafía'); plot(ax2, vT, vSVM, 'Color', [0 0.4 0.8]); grid(ax2, 'on');
+            ax2 = uiaxes(gGrid); title(ax2, 'Actigrafía SVM (Filtrada)'); plot(ax2, vT, vSVM, 'Color', [0 0.4 0.8]); grid(ax2, 'on');
             listaEjes = [ax1, ax2]; 
             
             if ~isempty(vSPO2)
-                ax3 = uiaxes(gGrid); title(ax3, 'SpO2 %'); plot(ax3, vT, vSPO2, 'g', 'LineWidth', 1.5); ylim(ax3, [85 100]); grid(ax3, 'on');
-                listaEjes = [listaEjes, ax3];
+                ax3 = uiaxes(gGrid); title(ax3, 'SpO2 %'); plot(ax3, vT, vSPO2, 'g'); ylim(ax3, [85 100]); listaEjes = [listaEjes, ax3];
             end
             if ~isempty(vBPM)
-                ax4 = uiaxes(gGrid); title(ax4, 'BPM'); plot(ax4, vT, vBPM, 'r', 'LineWidth', 1.5); ylim(ax4, [50 120]); grid(ax4, 'on');
-                listaEjes = [listaEjes, ax4];
+                ax4 = uiaxes(gGrid); title(ax4, 'BPM'); plot(ax4, vT, vBPM, 'r'); ylim(ax4, [40 160]); listaEjes = [listaEjes, ax4];
             end
-            
             UI.AxesAnaLista = listaEjes; 
             cambiarPanel(UI.PnlAna); navegarEpisodios(0);
-            logSistema('INFO', 'Análisis en memoria renderizado con éxito.');
-            
         catch ME
-            logSistema('ERROR', ['Crash Analizador: ', ME.message]);
-            uialert(UI.Fig, sprintf('Error al procesar los archivos:\n%s', ME.message), 'Error de Análisis');
+            uialert(UI.Fig, sprintf('Error al procesar:\n%s', ME.message), 'Error');
         end
     end
     
-    %% --- 6. FUNCIONES SECUNDARIAS Y CRC16 ---
+    %% --- 6. FUNCIONES SECUNDARIAS ---
     
     function dataOut = leerYValidarBatch(puerto, expectedCols, fusionarTiempo)
         dataOut = [];
-        if isempty(puerto) || ~isvalid(puerto) || puerto.NumDatagramsAvailable == 0
-            return; 
-        end
-        
+        if isempty(puerto) || ~isvalid(puerto) || puerto.NumDatagramsAvailable == 0, return; end
         try
-            numPaquetes = min(puerto.NumDatagramsAvailable, 50); 
-            paquetes = read(puerto, numPaquetes); 
-        catch
-            return;
-        end
+            paquetes = read(puerto, min(puerto.NumDatagramsAvailable, 50)); 
+        catch, return; end
         
-        columnasSalida = expectedCols;
-        if fusionarTiempo
-            columnasSalida = expectedCols - 1;
-        end
-        matrizTemporal = NaN(numPaquetes * 10, columnasSalida);
+        matrizTemporal = NaN(length(paquetes) * 10, expectedCols - fusionarTiempo);
         indiceValido = 0;
         
-        for p = 1:numPaquetes
-            payload = char(paquetes(p).Data);
-            lineas = strsplit(payload, '\n'); 
-            
+        for p = 1:length(paquetes)
+            lineas = strsplit(char(paquetes(p).Data), '\n'); 
             for i = 1:length(lineas)
                 strLine = strtrim(lineas{i});
                 if isempty(strLine) || startsWith(strLine, '#'), continue; end
                 
                 partes = strsplit(strLine, ',');
-                if length(partes) ~= expectedCols
-                    continue;
-                end
-                
-                crcRecibidoStr = partes{end};
-                msgOriginal = strjoin(partes(1:end-1), ',');
-                
-                crcCalculado = m_crc16(msgOriginal);
-                if ~strcmp(crcCalculado, crcRecibidoStr)
-                    continue;
-                end
+                if length(partes) ~= expectedCols, continue; end
+                if ~strcmp(m_crc16(strjoin(partes(1:end-1), ',')), partes{end}), continue; end
                 
                 nums = str2double(partes(1:end-1));
-                if any(isnan(nums))
-                    continue;
-                end
+                if any(isnan(nums)), continue; end
                 
                 if fusionarTiempo && length(nums) >= 2
                     nums = [nums(1) + (nums(2) / 1e6), nums(3:end)];
@@ -510,10 +434,7 @@ function AVA_Core_System()
                 end
             end
         end
-        
-        if indiceValido > 0
-            dataOut = matrizTemporal(1:indiceValido, :);
-        end
+        if indiceValido > 0, dataOut = matrizTemporal(1:indiceValido, :); end
     end
 
     function crcHex = m_crc16(data)
@@ -522,76 +443,46 @@ function AVA_Core_System()
         for i = 1:length(bytes)
             crc = bitxor(crc, uint16(bytes(i)));
             for j = 1:8
-                if bitand(crc, uint16(1))
-                    crc = bitxor(bitshift(crc, -1), uint16(hex2dec('A001')));
-                else
-                    crc = bitshift(crc, -1);
-                end
+                if bitand(crc, uint16(1)), crc = bitxor(bitshift(crc, -1), uint16(hex2dec('A001')));
+                else, crc = bitshift(crc, -1); end
             end
         end
         crcHex = sprintf('%04X', crc);
     end
 
     function mostrarMemoriaSegura()
-        % ✅ MEJORA: Validación multiplataforma para memory()
         if ispc
             try
                 mem = memory();
-                memMB = mem.MemUsedMATLAB / 1024^2;
-                pct = 100 * mem.MemUsedMATLAB / (mem.MemUsedMATLAB + mem.MemAvailableAllArrays);
-                UI.lblMemoria.Text = sprintf('RAM: %.0f MB (%.1f%%)', memMB, pct);
+                UI.lblMemoria.Text = sprintf('RAM: %.0f MB', mem.MemUsedMATLAB / 1024^2);
             catch
                 UI.lblMemoria.Text = 'RAM: N/A';
             end
-        else
-            UI.lblMemoria.Text = 'RAM: N/A (UNIX)';
         end
     end
 
     function [vT, vE, vS, vSp, vB] = leerCSVEnChunks(archivo)
-        chunkMuestras = 10000; 
         vT=[]; vE=[]; vS=[]; vSp=[]; vB=[];
-        
-        if ~isfile(archivo)
-            logSistema('ERROR', ['Archivo no existe: ', archivo]);
-            return;
-        end
-        
-        fid = fopen(archivo, 'r'); 
-        if fid < 0, return; end
+        fid = fopen(archivo, 'r'); if fid < 0, return; end
+        while ~feof(fid), if ~startsWith(fgetl(fid), '#'), break; end; end
         
         while ~feof(fid)
-            lin = fgetl(fid);
-            if ~ischar(lin) || ~startsWith(lin, '#'), break; end
-        end
-        
-        while ~feof(fid)
-            chunk = nan(chunkMuestras, 6); 
-            idxC = 0;
-            
-            for i = 1:chunkMuestras
-                lin = fgetl(fid); 
-                if ~ischar(lin), break; end
+            chunk = nan(10000, 6); idxC = 0;
+            for i = 1:10000
+                lin = fgetl(fid); if ~ischar(lin), break; end
                 if startsWith(lin, '#') || isempty(strip(lin)), continue; end 
-                
                 try
                     v = str2double(strsplit(lin, ','));
                     if ~isnan(v(1)) && ~isnan(v(2))
-                        idxC = idxC + 1;
-                        chunk(idxC, 1:min(length(v), 6)) = v(1:min(length(v), 6));
+                        idxC = idxC + 1; chunk(idxC, 1:min(length(v), 6)) = v(1:min(length(v), 6));
                     end
-                catch
-                end
+                catch, end
             end
-            
             if idxC == 0, break; end
-            
-            vT=[vT; chunk(1:idxC,1)]; 
-            vE=[vE; chunk(1:idxC,2)]; 
+            vT=[vT; chunk(1:idxC,1)]; vE=[vE; chunk(1:idxC,2)]; 
             if size(chunk,2)>=3, vS=[vS; chunk(1:idxC,3)]; end
             if size(chunk,2)>=4, vSp=[vSp; chunk(1:idxC,4)]; end
             if size(chunk,2)>=5, vB=[vB; chunk(1:idxC,5)]; end
-            
             clear chunk;
         end
         fclose(fid);
@@ -602,14 +493,12 @@ function AVA_Core_System()
         try
             idx = RingBuffer.Idx;
             if idx < 1 || idx > cfg.BufferMax.Muestras, return; end
-            RingBuffer.T(idx)    = t; RingBuffer.EMG(idx)  = emg;
-            RingBuffer.SVM(idx)  = svm; RingBuffer.SPO2(idx) = spo2;
-            RingBuffer.BPM(idx)  = bpm; RingBuffer.Anot(idx) = anot;
+            RingBuffer.T(idx) = t; RingBuffer.EMG(idx) = emg; RingBuffer.SVM(idx) = svm; 
+            RingBuffer.SPO2(idx) = spo2; RingBuffer.BPM(idx) = bpm; RingBuffer.Anot(idx) = anot;
             RingBuffer.Idx = uint32(mod(uint64(idx), uint64(cfg.BufferMax.Muestras))) + 1;
             if RingBuffer.Count < cfg.BufferMax.Muestras, RingBuffer.Count = RingBuffer.Count + 1;
             else, RingBuffer.Full = true; end
-        catch
-        end
+        catch, end
     end
 
     function [t, e, s, sp, b, a] = descomprimirRingBufferCorregido()
@@ -624,40 +513,31 @@ function AVA_Core_System()
 
     function backupIncrementalOptimizado(RB, ultimoIdx, nMax)
         if RB.Count == 0, return; end
-        if RB.Idx > ultimoIdx, idxs = ultimoIdx : (RB.Idx - 1);
-        else, idxs = [ultimoIdx : nMax, 1 : (RB.Idx - 1)]; end
-        if isempty(idxs) || length(idxs) > nMax, return; end
+        if RB.Idx > ultimoIdx, idxs = ultimoIdx:(RB.Idx - 1); else, idxs = [ultimoIdx:nMax, 1:(RB.Idx - 1)]; end
         T_nuevo = RB.T(idxs); EMG_nuevo = RB.EMG(idxs); SVM_nuevo = RB.SVM(idxs); %#ok<NASGU>
         rutaCache = fullfile(pwd, 'AVA_Nexus_Data', '.cache_incremental');
         if ~isfolder(rutaCache), mkdir(rutaCache); end
-        fStr = char(datetime('now', 'Format', 'yyyyMMdd_HHmmss'));
         try
-            save(fullfile(rutaCache, sprintf('bkp_chunk_%s.mat', fStr)), 'T_nuevo', 'EMG_nuevo', 'SVM_nuevo', '-v6');
-            archivos = dir(fullfile(rutaCache, 'bkp_chunk_*.mat'));
-            if length(archivos) > 10
-                [~, iSort] = sort([archivos.datenum]); delete(fullfile(rutaCache, archivos(iSort(1)).name));
-            end
-        catch
-        end
+            save(fullfile(rutaCache, sprintf('bkp_%s.mat', char(datetime('now', 'Format', 'HHmmss')))), 'T_nuevo', 'EMG_nuevo', 'SVM_nuevo', '-v6');
+        catch, end
     end
 
     function [spo2, bpm] = detectarBPMRobusto(bR, bI, fs)
+        % ✅ DSP MÉDICO: Filtro Pasa-Banda digital sin Toolboxes
         spo2 = 95; bpm = 70;
+        if length(bR) < fs * 5 || length(bI) < fs * 5, return; end
         
-        if length(bR) < fs || length(bI) < fs
-            return;
-        end
+        % Pasa-altos (elimina DC y deriva respiratoria) quitando el promedio móvil de 1s
+        bI_HP = bI - movmean(bI, fs);
+        % Pasa-bajos (suavizado)
+        bI_Filt = movmean(bI_HP, round(fs/10));
         
-        bI_AC = bI - mean(bI);
-        bI_norm = bI_AC / (std(bI_AC) + eps);
-        
+        bI_norm = bI_Filt / (std(bI_Filt) + eps);
         umbral = 0.5 * std(bI_norm);
         picos = [];
         
         for idx = 2:(length(bI_norm)-1)
-            if bI_norm(idx) > bI_norm(idx-1) && ...
-               bI_norm(idx) > bI_norm(idx+1) && ...
-               bI_norm(idx) > umbral
+            if bI_norm(idx) > bI_norm(idx-1) && bI_norm(idx) > bI_norm(idx+1) && bI_norm(idx) > umbral
                 picos = [picos, idx];
             end
         end
@@ -666,17 +546,17 @@ function AVA_Core_System()
             intProm = mean(diff(picos)) / fs;
             if intProm > 0
                 bpmCalc = 60 / intProm;
-                if bpmCalc >= 40 && bpmCalc <= 200
-                    bpm = bpmCalc;
-                end
+                if bpmCalc >= 40 && bpmCalc <= 200, bpm = bpmCalc; end
             end
         end
         
-        bR_AC = bR - mean(bR);
-        acR = std(bR_AC);
-        dcR = mean(abs(bR));
-        acI = std(bI_AC);
-        dcI = mean(abs(bI));
+        % SpO2 con extracción robusta AC/DC
+        bR_HP = bR - movmean(bR, fs);
+        acR = std(movmean(bR_HP, round(fs/10)));
+        dcR = mean(movmean(bR, fs));
+        
+        acI = std(bI_Filt);
+        dcI = mean(movmean(bI, fs));
         
         if dcR > 0 && dcI > 0
             R = (acR / (dcR + eps)) / (acI / (dcI + eps));
@@ -684,24 +564,24 @@ function AVA_Core_System()
         end
     end
     
-    %% --- LÓGICA AASM RESTAURADA ---
     function [anotFinal, mEpi, validosPLM] = procesarAASM(t, e, s, fs, cfg)
+        % ✅ AASM ACTUALIZADO: Filtrado de datos brutos a Envolvente antes de procesar
         t = t(:); e = e(:); s = s(:);
-        e_mean = mean(e, 'omitnan'); e_salto = abs(e - e_mean);
-        s_mean = movmean(s, fs * 2); s_ac = abs(s - s_mean);
+        e_hp = e - movmean(e, fs); % Eliminar línea base
+        e_env = movmean(abs(e_hp), round(fs/2)); % Envolvente RMS aproximada
+        s_ac = abs(s - movmean(s, fs*5)); % Quitar gravedad del SVM
         
-        emg_activo = e_salto > cfg.Umbrales.EMG_Contraccion;
+        emg_activo = e_env > cfg.Umbrales.EMG_Contraccion;
         svm_activo = s_ac > cfg.Umbrales.SVM_Movimiento;
         fus = emg_activo & svm_activo;
         
         fl = diff([0; fus; 0]); iI = find(fl==1); iF = find(fl==-1)-1;
-        
         iIU = []; iFU = [];
         if ~isempty(iI)
             cA = iI(1); cF = iF(1);
             for i = 2:length(iI)
                 if (iI(i) - cF)/fs < 0.5, cF = iF(i); 
-                else, iIU(end+1,1)=cA; iFU(end+1,1)=cF; cA=iI(i); cF=iF(i); end %#ok<AGROW>
+                else, iIU(end+1,1)=cA; iFU(end+1,1)=cF; cA=iI(i); cF=iF(i); end 
             end
             iIU(end+1,1)=cA; iFU(end+1,1)=cF;
         end
@@ -709,12 +589,10 @@ function AVA_Core_System()
         mPlm_Candidatos = []; 
         for i = 1:length(iIU)
             dur = (iFU(i) - iIU(i)) / fs; 
-            if dur >= 0.5 && dur <= 10.0, mPlm_Candidatos = [mPlm_Candidatos; iIU(i), iFU(i)]; end %#ok<AGROW>
+            if dur >= 0.5 && dur <= 10.0, mPlm_Candidatos = [mPlm_Candidatos; iIU(i), iFU(i)]; end 
         end
         
-        mEpi = []; 
-        validosPLM = []; 
-        
+        mEpi = []; validosPLM = []; 
         if ~isempty(mPlm_Candidatos)
             rt = mPlm_Candidatos(1,:);
             for j = 2:size(mPlm_Candidatos,1)
@@ -743,38 +621,21 @@ function AVA_Core_System()
     function cargarArchivo(tipo)
         [n, r] = uigetfile({'*.csv;*.txt'});
         if ~isequal(n, 0)
-            rutaFull = fullfile(r, n);
-            if ~isfile(rutaFull)
-                uialert(UI.Fig, 'Archivo no encontrado.', 'Error'); return; 
-            end
-            if strcmp(tipo, 'DATOS')
-                Archivos.Senales = rutaFull; UI.lblArchivoData.Text = ['CSV: ' n];
-            else
-                Archivos.Anotaciones = rutaFull; UI.lblArchivoData.Text = [UI.lblArchivoData.Text ' | TXT: ' n];
-            end
-            logSistema('INFO', ['Ingesta File I/O: ', n]);
+            if strcmp(tipo, 'DATOS'), Archivos.Senales = fullfile(r, n); UI.lblArchivoData.Text = ['CSV: ' n];
+            else, Archivos.Anotaciones = fullfile(r, n); UI.lblArchivoData.Text = [UI.lblArchivoData.Text ' | TXT: ' n]; end
         end
     end
 
     function actualizarEtiquetaEpisodio(idx, tPLM, tEpi)
         if idx < 0 || idx > tPLM || tPLM < 0, idx = 0; tPLM = 0; end
-        try
-            UI.lblEpi.Text = sprintf('SPI: %d / %d | Episodios: %d', idx, tPLM, tEpi);
-        catch
-            UI.lblEpi.Text = 'Datos Analíticos Corruptos';
-        end
+        try, UI.lblEpi.Text = sprintf('SPI: %d / %d | Episodios: %d', idx, tPLM, tEpi); catch, end
     end
 
     function navegarEpisodios(dir)
         if isempty(Analisis.EventosPLM) || isempty(UI.AxesAnaLista), return; end
-        
         Analisis.IdxNav = max(1, min(Analisis.IdxNav + dir, size(Analisis.EventosPLM, 1)));
         actualizarEtiquetaEpisodio(Analisis.IdxNav, Analisis.TotPLM, Analisis.TotEpisodios);
-        
-        tInicioEspasmo = Analisis.T(Analisis.EventosPLM(Analisis.IdxNav,1));
-        tFinEspasmo    = Analisis.T(Analisis.EventosPLM(Analisis.IdxNav,2));
-        
-        lim = [tInicioEspasmo - 5, tFinEspasmo + 5];
+        lim = [Analisis.T(Analisis.EventosPLM(Analisis.IdxNav,1)) - 5, Analisis.T(Analisis.EventosPLM(Analisis.IdxNav,2)) + 5];
         for i=1:length(UI.AxesAnaLista), xlim(UI.AxesAnaLista(i), lim); end
     end
 
@@ -811,8 +672,7 @@ function AVA_Core_System()
         persistent t0
         if isempty(t0), t0 = datetime('now'); end
         try
-            tAbs = seconds(datetime('now') - t0); fprintf('[%8.2fs] [%-5s] %s\n', tAbs, nivel, char(mensaje)); 
-        catch
-        end
+            fprintf('[%8.2fs] [%-5s] %s\n', seconds(datetime('now') - t0), nivel, char(mensaje)); 
+        catch, end
     end
 end
