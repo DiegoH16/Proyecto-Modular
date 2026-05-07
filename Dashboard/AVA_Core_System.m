@@ -241,7 +241,6 @@ function AVA_Core_System()
                                 std_emg = std(Estado.Calibracion.EMG_Data);
                                 std_svm = std(Estado.Calibracion.SVM_Data);
                                 
-                                % Si la desviación estándar indica que hubo movimiento severo
                                 if std_emg > 80 || std_svm > 0.5 
                                     logSistema('WARN', 'Exceso de movimiento en calibración. Reiniciando.');
                                     UI.lblInfo.Text = '¡RUIDO EXCESIVO! REINICIANDO...';
@@ -283,7 +282,6 @@ function AVA_Core_System()
                         if mod(Estado.UI.MuestrasRecibidas, 100) == 0 
                             [tempSPO2, tempBPM, is_artifact] = detectarBPMRobusto(Estado.Vitales.BufferRed, Estado.Vitales.BufferIR, Config.Muestreo.Fs_Hz); 
                             
-                            % ✅ MEJORA V7.3: Cegado Clínico durante Calibración
                             if Estado.Calibracion.Activa
                                 nuevoSPO2 = '--% (Calibrando)';
                                 nuevoBPM  = '-- (Calibrando)';
@@ -514,7 +512,7 @@ function AVA_Core_System()
         end
     end
     
-    %% --- 6. FUNCIONES SECUNDARIAS ---
+    %% --- 6. FUNCIONES SECUNDARIAS (Corregidas) ---
     
     function dataOut = leerYValidarBatch(puerto, expectedCols, fusionarTiempo)
         dataOut = [];
@@ -523,7 +521,14 @@ function AVA_Core_System()
             paquetes = read(puerto, min(puerto.NumDatagramsAvailable, 50)); 
         catch, return; end
         
-        matrizTemporal = NaN(length(paquetes) * 10, expectedCols - fusionarTiempo);
+        % ✅ CORRECCIÓN: número de columnas tras fusionar tiempo
+        if fusionarTiempo
+            columnasSalida = expectedCols - 2;   % antes era expectedCols - 1 (provocaba error)
+        else
+            columnasSalida = expectedCols - 1;
+        end
+        
+        matrizTemporal = NaN(length(paquetes) * 10, columnasSalida);
         indiceValido = 0;
         
         for p = 1:length(paquetes)
