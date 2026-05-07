@@ -1,5 +1,6 @@
 /*
- * DISPOSITIVO TOBILLO: MPU6050 + EMG (V3.1 PRODUCTION)
+ * DISPOSITIVO TOBILLO: MPU6050 + EMG (V3.2 OFFLINE AP MODE)
+ * Funciona como Router (Access Point). No requiere Internet.
  * Envía: Timestamp_UNIX, Ax, Ay, Az, EMG_RAW, CRC16\n
  */
 #include <Wire.h>
@@ -7,13 +8,19 @@
 #include <Adafruit_Sensor.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <time.h>
 #include <sys/time.h>
 
-// --- CONFIGURACIÓN DE RED ---
-const char* ssid = "TU_SSID_AQUI";           // <--- CAMBIAR
-const char* password = "TU_PASSWORD_AQUI";   // <--- CAMBIAR
-const char* ip_matlab = "192.168.100.30";    // <--- CAMBIAR
+// --- CONFIGURACIÓN DE RED (MODO PUNTO DE ACCESO) ---
+const char* ssid = "AVA_NEXUS";       // Nombre de la red Wi-Fi que creará el Tobillo
+const char* password = "ava_password"; // Contraseña de la red
+
+// ⚠️ MUY IMPORTANTE: IP DE TU COMPUTADORA ⚠️
+// Cuando tu PC se conecte a "AVA_NEXUS", el ESP32 le asignará una IP.
+// Por defecto, al primer dispositivo en conectarse le suele dar la 192.168.4.2
+// Si en MATLAB no recibes datos, abre la consola (cmd), escribe "ipconfig" 
+// y verifica cuál es tu dirección IPv4 en la red AVA_NEXUS, luego actualiza este valor:
+const char* ip_matlab = "192.168.4.2"; 
+
 const int puerto_datos = 8888;
 const int puerto_control = 9999;
 
@@ -24,11 +31,6 @@ Adafruit_MPU6050 mpu;
 const int PIN_EMG = 4; // ADC1_CH3 en ESP32
 const int FRECUENCIA_HZ = 50;
 const unsigned long INTERVALO_US = 1000000 / FRECUENCIA_HZ; // 20ms exactos
-
-// --- NTP SYNC ---
-const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 0; 
-const int   daylightOffset_sec = 0;
 
 // --- BATCHING ESTÁTICO ---
 const int TAMANO_LOTE = 5;
@@ -54,37 +56,19 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  // --- CONEXIÓN WIFI ---
-  WiFi.begin(ssid, password);
-  int intentos = 0;
-  while (WiFi.status() != WL_CONNECTED && intentos < 20) {
-    delay(500); Serial.print("."); intentos++;
-  }
+  // --- CREAR RED WIFI (MODO PUNTO DE ACCESO) ---
+  Serial.println("\n[SETUP] Iniciando Modo Router (Access Point)...");
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid, password);
+  delay(500);
   
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\n[ERROR] WiFi no conectado. Reiniciando...");
-    ESP.restart();
-  }
-  Serial.println("\n[OK] WiFi Conectado!");
-
-  // --- SINCRONIZACIÓN NTP (CON TIMEOUT) ---
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  struct tm timeinfo;
-  Serial.print("Sincronizando hora NTP");
-  unsigned long ntpInicio = millis();
-  bool ntpExitoso = false;
-  
-  while (millis() - ntpInicio < 10000) {
-    if (getLocalTime(&timeinfo, 10)) { ntpExitoso = true; break; }
-    Serial.print("."); delay(500);
-  }
-
-  if (ntpExitoso) Serial.println("\n[OK] Hora NTP Sincronizada!");
-  else Serial.println("\n[WARN] Timeout NTP. Usando reloj interno.");
+  Serial.println("[OK] Red AVA_NEXUS Creada!");
+  Serial.print("IP del Tobillo: ");
+  Serial.println(WiFi.softAPIP()); // Normalmente será 192.168.4.1
 
   // --- INICIALIZACIÓN DE HARDWARE ---
   Wire.begin(21, 22);
-  Wire.setClock(400000); // 400kHz Fast I2C para el MPU6050
+  Wire.setClock(400000); // 400kHz Fast I2C
 
   if (!mpu.begin()) {
     Serial.println("[ERROR] MPU6050 no encontrado!");
@@ -93,7 +77,7 @@ void setup() {
 
   mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ); // Filtro paso bajo físico
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ); 
 
   analogReadResolution(12);
 
@@ -124,18 +108,15 @@ void loop() {
     float az = a.acceleration.z;
     int emg_raw = analogRead(PIN_EMG);
 
-    // Compuerta de seguridad de aceleración
     if (abs(ax) > 40.0 || abs(ay) > 40.0 || abs(az) > 40.0) return;
 
     struct timeval tv;
     gettimeofday(&tv, NULL);
 
-    // Formatear línea base: UNIX, Ax, Ay, Az, EMG
     char linea[128];
     int len = snprintf(linea, sizeof(linea), "%lld.%06ld,%.2f,%.2f,%.2f,%d", 
                        (long long)tv.tv_sec, (long)tv.tv_usec, ax, ay, az, emg_raw);
 
-    // Calcular CRC16 y anexar al payload estático
     uint16_t crc = crc16(linea, len);
     int added = snprintf(payload + payload_len, sizeof(payload) - payload_len, "%s,%04X\n", linea, crc);
     
@@ -145,16 +126,14 @@ void loop() {
 
     contador++;
 
-    // Enviar lote de 5 muestras
     if (contador >= TAMANO_LOTE) {
       udp_datos.beginPacket(ip_matlab, puerto_datos);
       udp_datos.write((const uint8_t*)payload, payload_len);
       udp_datos.endPacket();
 
-      payload_len = 0; contador = 0; // Reset
+      payload_len = 0; contador = 0; 
     }
   }
   
-  // Tareas de red en background
   yield(); 
 }
