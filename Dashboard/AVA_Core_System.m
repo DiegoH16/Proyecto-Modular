@@ -2,49 +2,48 @@ function AVA_Core_System()
     
     clearvars; clc; close all force;
     
-    %% --- 0. VALIDACIÓN DE ENTORNO ---
-    matlabVersion = version('-release');
-    if str2double(matlabVersion(1:4)) < 2018
-        error('MATLAB R2018b o superior requerido. Versión actual: %s', matlabVersion);
-    end
-    
     %% --- 1. CONFIGURACIÓN CLÍNICA ESTRICTA ---
     Config = struct();
     Config.Puertos.Tobillo = 8888; 
     Config.Puertos.Biceps  = 8889; 
     Config.Puertos.Control = 9999; 
     
-    % ✅ ACTUALIZACIÓN: Sistema unificado a 100 Hz
     Config.Muestreo.Fs_Hz  = 100; 
     Config.Muestreo.VentanaGrafica_s = 60; 
     
     Config.BufferMax.Horas = 10;
     Config.BufferMax.Muestras = Config.Muestreo.Fs_Hz * 3600 * Config.BufferMax.Horas; 
     
-    % Refresco cada 10 muestras (10 FPS a 100Hz)
     Config.UI.RefrescoGraficas_Muestras = 10; 
     Config.Backup.MuestrasIntervalo = Config.Muestreo.Fs_Hz * 300;
     
     Config.Umbrales.IR_Minimo_Dedo = 3000;
+    
+    % Umbrales predeterminados (sobrescritos por autocalibración/CSV)
     Config.Umbrales.EMG_Contraccion = 50; 
     Config.Umbrales.SVM_Movimiento = 0.4;  
     
-    % Constantes para Filtros IIR DSP
     Config.Filtros.Alpha_SVM = 0.005; 
-    Config.Filtros.Alpha_EMG_HP = 0.05; % Ajustado para 100Hz (elimina DC del AD8232)
-    Config.Filtros.Alpha_EMG_LP = 0.1;  % Suavizado de Envolvente
+    Config.Filtros.Alpha_EMG_HP = 0.05; 
+    Config.Filtros.Alpha_EMG_LP = 0.1;  
     
-    %% --- 2. ESTADO GLOBAL Y RING BUFFER ---
+    %% --- 2. ESTADO GLOBAL Y RING BUFFER EXPANDIDO ---
     RingBuffer = struct();
-    RingBuffer.T    = zeros(1, Config.BufferMax.Muestras);      
-    RingBuffer.EMG  = zeros(1, Config.BufferMax.Muestras);   
-    RingBuffer.SVM  = zeros(1, Config.BufferMax.Muestras);  
-    RingBuffer.SPO2 = zeros(1, Config.BufferMax.Muestras);    
-    RingBuffer.BPM  = zeros(1, Config.BufferMax.Muestras);     
-    RingBuffer.Anot = logical(zeros(1, Config.BufferMax.Muestras));  
-    RingBuffer.Idx  = 1;      
-    RingBuffer.Count = 0;    
-    RingBuffer.Full = false; 
+    RingBuffer.T       = zeros(1, Config.BufferMax.Muestras);      
+    RingBuffer.Ax      = zeros(1, Config.BufferMax.Muestras);
+    RingBuffer.Ay      = zeros(1, Config.BufferMax.Muestras);
+    RingBuffer.Az      = zeros(1, Config.BufferMax.Muestras);
+    RingBuffer.EMG_Raw = zeros(1, Config.BufferMax.Muestras);
+    RingBuffer.Red_Raw = zeros(1, Config.BufferMax.Muestras);
+    RingBuffer.IR_Raw  = zeros(1, Config.BufferMax.Muestras);
+    RingBuffer.EMG_Env = zeros(1, Config.BufferMax.Muestras);   
+    RingBuffer.SVM_Ac  = zeros(1, Config.BufferMax.Muestras);  
+    RingBuffer.SPO2    = zeros(1, Config.BufferMax.Muestras);    
+    RingBuffer.BPM     = zeros(1, Config.BufferMax.Muestras);     
+    RingBuffer.Anot    = logical(zeros(1, Config.BufferMax.Muestras));  
+    RingBuffer.Idx     = 1;      
+    RingBuffer.Count   = 0;    
+    RingBuffer.Full    = false; 
     
     Estado = struct();
     Estado.Capturando = false;
@@ -54,13 +53,23 @@ function AVA_Core_System()
     Estado.DedoDetectado = false; 
     Estado.UltimoBackupIdx = 1;
     
+    % Autocalibración con control de calidad
+    Estado.Calibracion = struct('Activa', true, 'Cuenta', 0);
+    Estado.Calibracion.MuestrasDescarte = Config.Muestreo.Fs_Hz * 5;  
+    Estado.Calibracion.MuestrasRequeridas = Config.Muestreo.Fs_Hz * 30; 
+    
+    numMuestrasValidas = Estado.Calibracion.MuestrasRequeridas - Estado.Calibracion.MuestrasDescarte;
+    Estado.Calibracion.EMG_Data = zeros(1, numMuestrasValidas);
+    Estado.Calibracion.SVM_Data = zeros(1, numMuestrasValidas);
+    
     Estado.DSP.EMG_Baseline = 0;
     Estado.DSP.EMG_Envelope = 0;
     Estado.DSP.SVM_Baseline = 1.0;    
     
+    Estado.Vitales.UltimoRed = 0;
+    Estado.Vitales.UltimoIR = 0;
     Estado.Vitales.SPO2 = 98;
     Estado.Vitales.BPM = 70;
-    % Buffer robusto de 30 segundos (3000 muestras @ 100Hz)
     Estado.Vitales.BufferRed = zeros(1, Config.Muestreo.Fs_Hz * 30); 
     Estado.Vitales.BufferIR  = zeros(1, Config.Muestreo.Fs_Hz * 30);
     
@@ -77,9 +86,8 @@ function AVA_Core_System()
     limpiezaCierre = onCleanup(@() liberarRecursos(Red));
     
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
-    logSistema('INFO', 'Iniciando AVA Nexus V7.0 | 100Hz & AD8232 DSP');
     UI = struct();
-    UI.Fig = uifigure('Name', 'AVA Nexus V7.0 | Advanced PSG Edition', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
+    UI.Fig = uifigure('Name', 'AVA Nexus V7.3 | Clinical Trial Ready', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @(src, event) cerrarAplicacion(src, event);
     UI.AxesAnaLista = [];
     
@@ -87,7 +95,7 @@ function AVA_Core_System()
     UI.PnlAdq  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     UI.PnlAna  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     
-    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V7.0', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
+    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V7.3', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
     uibutton(UI.PnlMenu, 'Text', '1. Adquisición de Datos (UDP)', 'FontSize', 18, 'Position', [400, 450, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAdq));
     uibutton(UI.PnlMenu, 'Text', '2. Analizador Clínico (SPI)', 'FontSize', 18, 'Position', [400, 350, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAna));
     
@@ -96,7 +104,7 @@ function AVA_Core_System()
     UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Envolvente (AD8232 + DSP)'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 3];
     UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM (DSP)'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 3];
     
-    numPuntosGrafica = 6000; % Doble buffer gráfico por el aumento a 100Hz
+    numPuntosGrafica = 6000; 
     UI.lineaEMG = animatedline(UI.axEMG_TR, 'Color', [1 0.5 0], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     UI.lineaSVM = animatedline(UI.axSVM_TR, 'Color', [0 0.4 1], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     
@@ -163,16 +171,12 @@ function AVA_Core_System()
                 lineasT = leerYValidarBatch(Red.UdpTobillo, 7, true); 
                 
                 if ~isempty(lineasB)
-                    if isnan(Estado.OffsetBiceps) 
-                        Estado.OffsetBiceps = posixtime(datetime('now')) - lineasB(1,1);
-                    end
+                    if isnan(Estado.OffsetBiceps), Estado.OffsetBiceps = posixtime(datetime('now')) - lineasB(1,1); end
                     lineasB(:,1) = lineasB(:,1) + Estado.OffsetBiceps;
                 end
                 
                 if ~isempty(lineasT)
-                    if isnan(Estado.OffsetTobillo) 
-                        Estado.OffsetTobillo = posixtime(datetime('now')) - lineasT(1,1);
-                    end
+                    if isnan(Estado.OffsetTobillo), Estado.OffsetTobillo = posixtime(datetime('now')) - lineasT(1,1); end
                     lineasT(:,1) = lineasT(:,1) + Estado.OffsetTobillo;
                 end
                 
@@ -186,6 +190,8 @@ function AVA_Core_System()
                 if ~isempty(lineasB) && Estado.T0_Global ~= -1
                     for i = 1:size(lineasB, 1)
                         datosB = lineasB(i,:);
+                        Estado.Vitales.UltimoRed = datosB(2);
+                        Estado.Vitales.UltimoIR  = datosB(3);
                         Estado.Vitales.BufferRed = [Estado.Vitales.BufferRed(2:end), datosB(2)]; 
                         Estado.Vitales.BufferIR  = [Estado.Vitales.BufferIR(2:end), datosB(3)];
                         Estado.DedoDetectado = (datosB(3) > Config.Umbrales.IR_Minimo_Dedo);
@@ -199,16 +205,63 @@ function AVA_Core_System()
                         tRelativo = datosT(1) - Estado.T0_Global;
                         if tRelativo < 0, continue; end 
                         
-                        % ✅ DSP EMG con señal de AD8232 (Centrado y Rectificado)
+                        ax = datosT(2); ay = datosT(3); az = datosT(4);
                         emg_crudo = datosT(5);
+                        
                         Estado.DSP.EMG_Baseline = (1 - Config.Filtros.Alpha_EMG_HP) * Estado.DSP.EMG_Baseline + (Config.Filtros.Alpha_EMG_HP * emg_crudo);
-                        emg_ac = abs(emg_crudo - Estado.DSP.EMG_Baseline); % Rectificación de onda completa
+                        emg_ac = abs(emg_crudo - Estado.DSP.EMG_Baseline); 
                         Estado.DSP.EMG_Envelope = (1 - Config.Filtros.Alpha_EMG_LP) * Estado.DSP.EMG_Envelope + (Config.Filtros.Alpha_EMG_LP * emg_ac);
                         
-                        % DSP SVM
                         svm_crudo = sqrt(sum(datosT(2:4).^2));
                         Estado.DSP.SVM_Baseline = (1 - Config.Filtros.Alpha_SVM) * Estado.DSP.SVM_Baseline + (Config.Filtros.Alpha_SVM * svm_crudo);
                         svm_ac = abs(svm_crudo - Estado.DSP.SVM_Baseline);
+                        
+                        % ✅ MEJORA V7.3: Control estricto de calidad en la Calibración
+                        if Estado.Calibracion.Activa
+                            Estado.Calibracion.Cuenta = Estado.Calibracion.Cuenta + 1;
+                            
+                            if Estado.Calibracion.Cuenta > Estado.Calibracion.MuestrasDescarte
+                                idx = Estado.Calibracion.Cuenta - Estado.Calibracion.MuestrasDescarte;
+                                Estado.Calibracion.EMG_Data(idx) = Estado.DSP.EMG_Envelope;
+                                Estado.Calibracion.SVM_Data(idx) = svm_ac;
+                            end
+                            
+                            pct = round(100 * Estado.Calibracion.Cuenta / Estado.Calibracion.MuestrasRequeridas);
+                            
+                            if Estado.Calibracion.Cuenta <= Estado.Calibracion.MuestrasDescarte
+                                UI.lblInfo.Text = sprintf('ESTABILIZANDO SEÑAL... %d%%', pct);
+                                UI.lblInfo.FontColor = [0.8 0.1 0];
+                            else
+                                UI.lblInfo.Text = sprintf('CALIBRANDO UMBRALES... %d%%', pct);
+                                UI.lblInfo.FontColor = [0.8 0.4 0];
+                            end
+                            
+                            if Estado.Calibracion.Cuenta >= Estado.Calibracion.MuestrasRequeridas
+                                % Validación de ruido
+                                std_emg = std(Estado.Calibracion.EMG_Data);
+                                std_svm = std(Estado.Calibracion.SVM_Data);
+                                
+                                % Si la desviación estándar indica que hubo movimiento severo
+                                if std_emg > 80 || std_svm > 0.5 
+                                    logSistema('WARN', 'Exceso de movimiento en calibración. Reiniciando.');
+                                    UI.lblInfo.Text = '¡RUIDO EXCESIVO! REINICIANDO...';
+                                    UI.lblInfo.FontColor = [1 0 0];
+                                    Estado.Calibracion.Cuenta = 0; % Abortar y reiniciar
+                                else
+                                    % Calibración Exitosa
+                                    Config.Umbrales.EMG_Contraccion = mean(Estado.Calibracion.EMG_Data) + 5 * std_emg;
+                                    Config.Umbrales.SVM_Movimiento  = mean(Estado.Calibracion.SVM_Data) + 5 * std_svm;
+                                    
+                                    Config.Umbrales.EMG_Contraccion = max(10, Config.Umbrales.EMG_Contraccion);
+                                    Config.Umbrales.SVM_Movimiento  = max(0.1, Config.Umbrales.SVM_Movimiento);
+                                    
+                                    Estado.Calibracion.Activa = false;
+                                    UI.lblInfo.Text = sprintf('Thr EMG: %.1f | Thr SVM: %.2f', Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento);
+                                    UI.lblInfo.FontColor = [0 0.6 0];
+                                    logSistema('INFO', 'Calibración exitosa.');
+                                end
+                            end
+                        end
                         
                         contraccionActual = (Estado.DSP.EMG_Envelope > Config.Umbrales.EMG_Contraccion) && (svm_ac > Config.Umbrales.SVM_Movimiento);
                         
@@ -227,17 +280,35 @@ function AVA_Core_System()
                             actualizarEjesGrafica([UI.axEMG_TR, UI.axSVM_TR], tRelativo, Config.Muestreo.VentanaGrafica_s);
                         end
                         
-                        % Actualización Vitales (ajustado para 100Hz)
                         if mod(Estado.UI.MuestrasRecibidas, 100) == 0 
-                            [Estado.Vitales.SPO2, Estado.Vitales.BPM] = detectarBPMRobusto(Estado.Vitales.BufferRed, Estado.Vitales.BufferIR, Config.Muestreo.Fs_Hz); 
+                            [tempSPO2, tempBPM, is_artifact] = detectarBPMRobusto(Estado.Vitales.BufferRed, Estado.Vitales.BufferIR, Config.Muestreo.Fs_Hz); 
                             
-                            if Estado.DedoDetectado
-                                nuevoSPO2 = sprintf('%d%% SpO2', round(Estado.Vitales.SPO2));
-                                nuevoBPM  = sprintf('%d BPM', round(Estado.Vitales.BPM));
-                                UI.lblSPO2.FontColor = [0 0.4 0.8]; 
+                            % ✅ MEJORA V7.3: Cegado Clínico durante Calibración
+                            if Estado.Calibracion.Activa
+                                nuevoSPO2 = '--% (Calibrando)';
+                                nuevoBPM  = '-- (Calibrando)';
+                                UI.lblSPO2.FontColor = [0.5 0.5 0.5]; 
+                                Estado.Vitales.SPO2 = 0; % No registrar en buffer mientras calibra
+                                Estado.Vitales.BPM = 0;
                             else
-                                nuevoSPO2 = 'SIN DEDO'; nuevoBPM = '--- BPM'; 
-                                UI.lblSPO2.FontColor = [0.8 0.2 0.2]; 
+                                if Estado.DedoDetectado
+                                    if ~is_artifact && tempSPO2 > 0
+                                        Estado.Vitales.SPO2 = tempSPO2;
+                                        Estado.Vitales.BPM = tempBPM;
+                                        nuevoSPO2 = sprintf('%d%% SpO2', round(Estado.Vitales.SPO2));
+                                        nuevoBPM  = sprintf('%d BPM', round(Estado.Vitales.BPM));
+                                        UI.lblSPO2.FontColor = [0 0.4 0.8]; 
+                                    else
+                                        nuevoSPO2 = sprintf('%d%% (RUIDO)', round(Estado.Vitales.SPO2));
+                                        nuevoBPM  = sprintf('%d (RUIDO)', round(Estado.Vitales.BPM));
+                                        UI.lblSPO2.FontColor = [0.8 0.4 0]; 
+                                    end
+                                else
+                                    nuevoSPO2 = 'SIN DEDO'; nuevoBPM = '--- BPM'; 
+                                    UI.lblSPO2.FontColor = [0.8 0.2 0.2]; 
+                                    Estado.Vitales.SPO2 = 0;
+                                    Estado.Vitales.BPM = 0;
+                                end
                             end
                             
                             if ~strcmp(Estado.UI.SPO2Text, nuevoSPO2)
@@ -249,7 +320,6 @@ function AVA_Core_System()
                             mostrarMemoriaSegura();
                         end
                         
-                        % Backup
                         Estado.UI.MuestrasDesdeUltimoBackup = Estado.UI.MuestrasDesdeUltimoBackup + 1;
                         if Estado.UI.MuestrasDesdeUltimoBackup > Config.Backup.MuestrasIntervalo
                             backupIncrementalOptimizado(RingBuffer, Estado.UltimoBackupIdx, Config.BufferMax.Muestras);
@@ -257,13 +327,14 @@ function AVA_Core_System()
                             Estado.UI.MuestrasDesdeUltimoBackup = 0;
                         end
                         
-                        guardarEnRingBuffer(datosT(1), Estado.DSP.EMG_Envelope, svm_ac, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
+                        guardarEnRingBuffer(datosT(1), ax, ay, az, emg_crudo, Estado.Vitales.UltimoRed, Estado.Vitales.UltimoIR, ...
+                                            Estado.DSP.EMG_Envelope, svm_ac, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
                         Estado.UI.MuestrasRecibidas = Estado.UI.MuestrasRecibidas + 1;
                     end
                 end
             end
         catch excepcionMain
-            logSistema('WARN', ['Excepción principal (mitigada): ', excepcionMain.message]);
+            logSistema('WARN', ['Excepción principal: ', excepcionMain.message]);
         end
         drawnow limitrate; 
         pause(0.001); 
@@ -278,6 +349,9 @@ function AVA_Core_System()
             Estado.OffsetBiceps = NaN;
             Estado.T0_Global = -1;
             
+            Estado.Calibracion.Activa = true;
+            Estado.Calibracion.Cuenta = 0;
+            
             Estado.DSP.EMG_Baseline = 0;
             Estado.DSP.EMG_Envelope = 0;
             Estado.DSP.SVM_Baseline = 1.0; 
@@ -289,15 +363,13 @@ function AVA_Core_System()
             try
                 Red.UdpControl = udpport("datagram", "LocalPort", Config.Puertos.Control);
                 Red.UdpControl.Timeout = 0.1;
-                logSistema('INFO', 'Puerto de Control 9999 (SYNC) abierto.');
             catch ME
-                logSistema('WARN', ['No se pudo abrir el puerto 9999: ', ME.message]);
+                logSistema('WARN', ['No se pudo abrir puerto 9999: ', ME.message]);
             end
 
             try 
                 Red.UdpTobillo = udpport("datagram", "LocalPort", Config.Puertos.Tobillo);
                 Red.UdpTobillo.Timeout = 0.5;
-                logSistema('INFO', 'Puerto UDP Tobillo abierto.');
             catch ME
                 uialert(UI.Fig, ['Error Tobillo: ', ME.message], 'Error UDP'); 
                 Estado.Capturando = false; return;
@@ -306,14 +378,13 @@ function AVA_Core_System()
             try 
                 Red.UdpBiceps  = udpport("datagram", "LocalPort", Config.Puertos.Biceps);
                 Red.UdpBiceps.Timeout = 0.5;
-                logSistema('INFO', 'Puerto UDP Bíceps abierto.');
             catch ME
                 clear Red.UdpTobillo; clear Red.UdpControl;
                 uialert(UI.Fig, ['Error Bíceps: ', ME.message], 'Error UDP'); 
                 Estado.Capturando = false; return;
             end
             
-            UI.lblInfo.Text = "ACTIVO"; UI.lblInfo.FontColor = [0 0.5 0];
+            UI.lblInfo.Text = "ESTABILIZANDO SEÑAL..."; UI.lblInfo.FontColor = [0.8 0.1 0];
             clearpoints(UI.lineaEMG); clearpoints(UI.lineaSVM); 
             UI.btnUDP.Text = "⏹ Detener"; UI.btnUDP.BackgroundColor = [1 0.4 0.4];
         else
@@ -332,22 +403,27 @@ function AVA_Core_System()
         if ~isfolder(rutaSalida), mkdir(rutaSalida); end
         
         backupIncrementalOptimizado(RingBuffer, Estado.UltimoBackupIdx, Config.BufferMax.Muestras); 
-        [t_d, emg_d, svm_d, spo2_d, bpm_d, anot_d] = descomprimirRingBufferCorregido();
+        
+        [t_d, ax_d, ay_d, az_d, emgRaw_d, red_d, ir_d, emgEnv_d, svmAc_d, spo2_d, bpm_d, anot_d] = descomprimirRingBufferCorregido();
         if isempty(t_d), return; end
         
         try
-            nameCSV = fullfile(rutaSalida, sprintf('AVA_Estudio_%s.csv', fStr));
+            nameCSV = fullfile(rutaSalida, sprintf('AVA_Estudio_DataLake_%s.csv', fStr));
             nameTXT = fullfile(rutaSalida, sprintf('AVA_Anotaciones_%s.txt', fStr));
             
-            % ✅ Llamada actualizada a procesarAASM que ahora acepta el vector SpO2
-            [anotFinal, epi, validosPLM] = procesarAASM(t_d, emg_d, svm_d, spo2_d, Config.Muestreo.Fs_Hz, Config);
+            [anotFinal, epi, validosPLM] = procesarAASM(t_d, emgEnv_d, svmAc_d, spo2_d, Config.Muestreo.Fs_Hz, Config);
             
             fid = fopen(nameCSV, 'w');
-            fprintf(fid, '# AVA Nexus V7.0 Estudio DSP AASM\n');
+            fprintf(fid, '# AVA Nexus V7.3 Data Lake (Clinical Trial Ready)\n');
             fprintf(fid, '# Exportado: %s\n', char(datetime('now')));
-            fprintf(fid, 'Time_s_UTC,EMG_Env,SVM_ac,SpO2_pct,BPM_bpm,AASM_SPI\n');
+            fprintf(fid, '# Fs_Hz: %d\n', Config.Muestreo.Fs_Hz);
+            fprintf(fid, '# Thr_EMG: %.4f\n', Config.Umbrales.EMG_Contraccion);
+            fprintf(fid, '# Thr_SVM: %.4f\n', Config.Umbrales.SVM_Movimiento);
+            fprintf(fid, 'Time_s_UTC,Ax,Ay,Az,EMG_Raw,Red_Raw,IR_Raw,EMG_Env,SVM_ac,SpO2_pct,BPM_bpm,AASM_SPI\n');
+            
             for i = 1:length(t_d)
-                fprintf(fid, '%.6f,%.6f,%.6f,%d,%d,%d\n', t_d(i), emg_d(i), svm_d(i), round(spo2_d(i)), round(bpm_d(i)), anotFinal(i));
+                fprintf(fid, '%.6f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.6f,%.6f,%d,%d,%d\n', ...
+                        t_d(i), ax_d(i), ay_d(i), az_d(i), emgRaw_d(i), red_d(i), ir_d(i), emgEnv_d(i), svmAc_d(i), round(spo2_d(i)), round(bpm_d(i)), anotFinal(i));
             end
             fclose(fid);
             
@@ -365,12 +441,45 @@ function AVA_Core_System()
     function ejecutarAnalisisPro()
         if Archivos.Senales == "", uialert(UI.Fig, 'Seleccione un CSV.', 'Aviso'); return; end
         try
-            [vT, vEMG, vSVM, vSPO2, vBPM] = leerCSVEnChunks(Archivos.Senales);
-            if size(vT, 1) < 10, uialert(UI.Fig, 'CSV inválido.', 'Error'); return; end
+            fid = fopen(Archivos.Senales, 'r');
+            while ~feof(fid)
+                lin = fgetl(fid);
+                if ~ischar(lin) || ~startsWith(lin, '#'), break; end
+                
+                if contains(lin, 'Thr_EMG:')
+                    partes = strsplit(lin, ':'); Config.Umbrales.EMG_Contraccion = str2double(partes{2});
+                elseif contains(lin, 'Thr_SVM:')
+                    partes = strsplit(lin, ':'); Config.Umbrales.SVM_Movimiento = str2double(partes{2});
+                elseif contains(lin, 'Fs_Hz:')
+                    partes = strsplit(lin, ':'); Config.Muestreo.Fs_Hz = str2double(partes{2});
+                end
+            end
+            fclose(fid);
+            
+            logSistema('INFO', sprintf('Análisis Offline con Thr_EMG: %.2f y Thr_SVM: %.2f', Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento));
+
+            data = readmatrix(Archivos.Senales, 'CommentStyle', '#');
+            if size(data, 1) < 10, uialert(UI.Fig, 'CSV inválido o muy corto.', 'Error'); return; end
+            
+            % ✅ MEJORA V7.3: Retrocompatibilidad Total (Incluso archivos sin SpO2)
+            numCols = size(data, 2);
+            tieneSpO2 = true;
+            
+            if numCols == 12 % V7.1 y V7.2 Data Lake
+                vT = data(:,1); vEMG = data(:,8); vSVM = data(:,9); vSPO2 = data(:,10); vBPM = data(:,11);
+            elseif numCols >= 6 % V7.0 Legacy
+                vT = data(:,1); vEMG = data(:,2); vSVM = data(:,3); vSPO2 = data(:,4); vBPM = data(:,5);
+            elseif numCols == 5 % Muy antiguo (Sin SpO2)
+                vT = data(:,1); vEMG = data(:,2); vSVM = data(:,3); 
+                vSPO2 = ones(size(vT)) * 98; % Vector simulado sano
+                vBPM = data(:,4);
+                tieneSpO2 = false;
+                logSistema('WARN', 'CSV legado detectado sin SpO2. Exclusión respiratoria deshabilitada.');
+            else
+                uialert(UI.Fig, 'Formato CSV no reconocido.', 'Error'); return;
+            end
             
             fsReal = 1 / mean(diff(vT), 'omitnan');
-            
-            % ✅ Procesamiento con Regla Respiratoria SpO2
             [Analisis.Anotaciones, mEpi, validosPLM] = procesarAASM(vT, vEMG, vSVM, vSPO2, fsReal, Config);
             
             Analisis.EventosPLM = validosPLM; 
@@ -380,26 +489,25 @@ function AVA_Core_System()
             actualizarEtiquetaEpisodio(0, Analisis.TotPLM, Analisis.TotEpisodios);
             
             delete(UI.pnlGraficasAna.Children); 
-            gGrid = uigridlayout(UI.pnlGraficasAna, [2 + (~isempty(vSPO2)) + (~isempty(vBPM)), 1], 'Padding', 0);
+            gGrid = uigridlayout(UI.pnlGraficasAna, [4, 1], 'Padding', 0);
             
-            ax1 = uiaxes(gGrid); title(ax1, 'EMG Envolvente + PLM (AASM Contrastado)'); hold(ax1,'on'); grid(ax1, 'on');
+            ax1 = uiaxes(gGrid); title(ax1, 'EMG Envolvente + PLM (AASM)'); hold(ax1,'on'); grid(ax1, 'on');
             plot(ax1, vT, vEMG, 'Color', [0.6 0.6 0.6]); 
-            plot(ax1, vT, Analisis.Anotaciones * max(100, max(vEMG)), 'r', 'LineWidth', 1.5);
+            plot(ax1, vT, Analisis.Anotaciones * max(10, max(vEMG)), 'r', 'LineWidth', 1.5);
             
             ax2 = uiaxes(gGrid); title(ax2, 'Actigrafía SVM (Filtrada)'); plot(ax2, vT, vSVM, 'Color', [0 0.4 0.8]); grid(ax2, 'on');
-            listaEjes = [ax1, ax2]; 
             
-            if ~isempty(vSPO2)
-                ax3 = uiaxes(gGrid); title(ax3, 'SpO2 % (Detección Hipoxia)'); hold(ax3, 'on'); 
-                plot(ax3, vT, vSPO2, 'g'); 
-                % Mostrar la línea base aproximada de SpO2 para visualización
-                plot(ax3, vT, movmean(vSPO2, fsReal * 120), 'k--', 'LineWidth', 1);
-                ylim(ax3, [85 100]); listaEjes = [listaEjes, ax3];
+            ax3 = uiaxes(gGrid); 
+            if tieneSpO2
+                title(ax3, 'SpO2 % (Detección Hipoxia)'); hold(ax3, 'on'); 
+                plot(ax3, vT, vSPO2, 'g'); plot(ax3, vT, movmean(vSPO2, fsReal * 120), 'k--', 'LineWidth', 1); ylim(ax3, [85 100]); 
+            else
+                title(ax3, 'SpO2 % (Datos no disponibles en CSV)'); ylim(ax3, [0 100]);
             end
-            if ~isempty(vBPM)
-                ax4 = uiaxes(gGrid); title(ax4, 'BPM'); plot(ax4, vT, vBPM, 'r'); ylim(ax4, [40 160]); listaEjes = [listaEjes, ax4];
-            end
-            UI.AxesAnaLista = listaEjes; 
+            
+            ax4 = uiaxes(gGrid); title(ax4, 'BPM'); plot(ax4, vT, vBPM, 'r'); ylim(ax4, [40 160]); 
+            
+            UI.AxesAnaLista = [ax1, ax2, ax3, ax4]; 
             cambiarPanel(UI.PnlAna); navegarEpisodios(0);
         catch ME
             uialert(UI.Fig, sprintf('Error al procesar:\n%s', ME.message), 'Error');
@@ -470,60 +578,36 @@ function AVA_Core_System()
         end
     end
 
-    function [vT, vE, vS, vSp, vB] = leerCSVEnChunks(archivo)
-        vT=[]; vE=[]; vS=[]; vSp=[]; vB=[];
-        fid = fopen(archivo, 'r'); if fid < 0, return; end
-        while ~feof(fid), if ~startsWith(fgetl(fid), '#'), break; end; end
-        
-        while ~feof(fid)
-            chunk = nan(10000, 6); idxC = 0;
-            for i = 1:10000
-                lin = fgetl(fid); if ~ischar(lin), break; end
-                if startsWith(lin, '#') || isempty(strip(lin)), continue; end 
-                try
-                    v = str2double(strsplit(lin, ','));
-                    if ~isnan(v(1)) && ~isnan(v(2))
-                        idxC = idxC + 1; chunk(idxC, 1:min(length(v), 6)) = v(1:min(length(v), 6));
-                    end
-                catch, end
-            end
-            if idxC == 0, break; end
-            vT=[vT; chunk(1:idxC,1)]; vE=[vE; chunk(1:idxC,2)]; 
-            if size(chunk,2)>=3, vS=[vS; chunk(1:idxC,3)]; end
-            if size(chunk,2)>=4, vSp=[vSp; chunk(1:idxC,4)]; end
-            if size(chunk,2)>=5, vB=[vB; chunk(1:idxC,5)]; end
-            clear chunk;
-        end
-        fclose(fid);
-        vT=vT(:); vE=vE(:); vS=vS(:); vSp=vSp(:); vB=vB(:);
-    end
-
-    function guardarEnRingBuffer(t, emg, svm, spo2, bpm, anot, cfg)
+    function guardarEnRingBuffer(t, ax, ay, az, emgRaw, redRaw, irRaw, emgEnv, svm, spo2, bpm, anot, cfg)
         try
             idx = RingBuffer.Idx;
             if idx < 1 || idx > cfg.BufferMax.Muestras, return; end
-            RingBuffer.T(idx) = t; RingBuffer.EMG(idx) = emg; RingBuffer.SVM(idx) = svm; 
+            RingBuffer.T(idx) = t; RingBuffer.Ax(idx) = ax; RingBuffer.Ay(idx) = ay; RingBuffer.Az(idx) = az;
+            RingBuffer.EMG_Raw(idx) = emgRaw; RingBuffer.Red_Raw(idx) = redRaw; RingBuffer.IR_Raw(idx) = irRaw;
+            RingBuffer.EMG_Env(idx) = emgEnv; RingBuffer.SVM_Ac(idx) = svm; 
             RingBuffer.SPO2(idx) = spo2; RingBuffer.BPM(idx) = bpm; RingBuffer.Anot(idx) = anot;
+            
             RingBuffer.Idx = uint32(mod(uint64(idx), uint64(cfg.BufferMax.Muestras))) + 1;
             if RingBuffer.Count < cfg.BufferMax.Muestras, RingBuffer.Count = RingBuffer.Count + 1;
             else, RingBuffer.Full = true; end
         catch, end
     end
 
-    function [t, e, s, sp, b, a] = descomprimirRingBufferCorregido()
+    function [t, ax, ay, az, er, rr, ir, ee, sv, sp, b, a] = descomprimirRingBufferCorregido()
         c = RingBuffer.Count; nMax = Config.BufferMax.Muestras;
-        if c == 0, t=[]; e=[]; s=[]; sp=[]; b=[]; a=[]; return; end
-        if RingBuffer.Full, idxTemp = mod((0:c-1) + RingBuffer.Idx - 1, nMax) + 1;
-        else, idxTemp = 1:c; end
-        t = RingBuffer.T(idxTemp)'; e = RingBuffer.EMG(idxTemp)';
-        s = RingBuffer.SVM(idxTemp)'; sp= RingBuffer.SPO2(idxTemp)';
-        b = RingBuffer.BPM(idxTemp)'; a = double(RingBuffer.Anot(idxTemp))';
+        if c == 0, t=[]; ax=[]; ay=[]; az=[]; er=[]; rr=[]; ir=[]; ee=[]; sv=[]; sp=[]; b=[]; a=[]; return; end
+        if RingBuffer.Full, idxT = mod((0:c-1) + RingBuffer.Idx - 1, nMax) + 1; else, idxT = 1:c; end
+        
+        t = RingBuffer.T(idxT)'; ax = RingBuffer.Ax(idxT)'; ay = RingBuffer.Ay(idxT)'; az = RingBuffer.Az(idxT)';
+        er = RingBuffer.EMG_Raw(idxT)'; rr = RingBuffer.Red_Raw(idxT)'; ir = RingBuffer.IR_Raw(idxT)';
+        ee = RingBuffer.EMG_Env(idxT)'; sv = RingBuffer.SVM_Ac(idxT)'; 
+        sp= RingBuffer.SPO2(idxT)'; b = RingBuffer.BPM(idxT)'; a = double(RingBuffer.Anot(idxT))';
     end
 
     function backupIncrementalOptimizado(RB, ultimoIdx, nMax)
         if RB.Count == 0, return; end
         if RB.Idx > ultimoIdx, idxs = ultimoIdx:(RB.Idx - 1); else, idxs = [ultimoIdx:nMax, 1:(RB.Idx - 1)]; end
-        T_nuevo = RB.T(idxs); EMG_nuevo = RB.EMG(idxs); SVM_nuevo = RB.SVM(idxs); %#ok<NASGU>
+        T_nuevo = RB.T(idxs); EMG_nuevo = RB.EMG_Env(idxs); SVM_nuevo = RB.SVM_Ac(idxs); %#ok<NASGU>
         rutaCache = fullfile(pwd, 'AVA_Nexus_Data', '.cache_incremental');
         if ~isfolder(rutaCache), mkdir(rutaCache); end
         try
@@ -531,12 +615,18 @@ function AVA_Core_System()
         catch, end
     end
 
-    function [spo2, bpm] = detectarBPMRobusto(bR, bI, fs)
-        spo2 = 95; bpm = 70;
+    function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
+        spo2 = 95; bpm = 70; is_artifact = false;
         if length(bR) < fs * 5 || length(bI) < fs * 5, return; end
         
         bI_HP = bI - movmean(bI, fs);
         bI_Filt = movmean(bI_HP, round(fs/10));
+        
+        p2p_actual = max(bI_Filt) - min(bI_Filt);
+        if p2p_actual > (4 * std(bI_Filt)) 
+            is_artifact = true;
+            return;
+        end
         
         bI_norm = bI_Filt / (std(bI_Filt) + eps);
         umbral = 0.5 * std(bI_norm);
@@ -556,8 +646,6 @@ function AVA_Core_System()
             end
         end
         
-        % NOTE: Cálculo AC/DC actual como placeholder funcional.
-        % Requiere calibración empírica en fase posterior.
         bR_HP = bR - movmean(bR, fs);
         acR = std(movmean(bR_HP, round(fs/10)));
         dcR = mean(movmean(bR, fs));
@@ -567,36 +655,27 @@ function AVA_Core_System()
         
         if dcR > 0 && dcI > 0
             R = (acR / (dcR + eps)) / (acI / (dcI + eps));
-            spo2 = max(85, min(99, 110 - 25 * R));
+            spo2_calc = -45.060 * (R^2) + 30.354 * R + 94.845;
+            spo2 = max(0, min(100, spo2_calc));
         end
     end
     
     function [anotFinal, mEpi, validosPLM] = procesarAASM(t, e, s, spo2_data, fs, cfg)
-        % ✅ MÉDICA: Algoritmo AASM Integrado con Exclusión Respiratoria
         t = t(:); e = e(:); s = s(:); spo2_data = spo2_data(:);
         
-        % 1. Extraer Señal de Movimiento (EMG + SVM)
-        e_hp = e - movmean(e, fs); 
-        e_env = movmean(abs(e_hp), round(fs/2)); 
-        s_ac = abs(s - movmean(s, fs*5)); 
-        
-        emg_activo = e_env > cfg.Umbrales.EMG_Contraccion;
-        svm_activo = s_ac > cfg.Umbrales.SVM_Movimiento;
+        emg_activo = e > cfg.Umbrales.EMG_Contraccion;
+        svm_activo = s > cfg.Umbrales.SVM_Movimiento;
         fus = emg_activo & svm_activo;
         
-        % 2. Extraer Eventos Respiratorios (Caída de SpO2 >= 3%)
-        % Promedio base muy lento (2 minutos)
         spo2_base = movmean(spo2_data, fs * 120);
         es_hipoxia = (spo2_base - spo2_data) >= 3;
         
-        % Expansión de la ventana de exclusión (±10 segundos alrededor del evento respiratorio)
         ventanaExclusion = round(fs * 10);
         exclusionRespiratoria = movmax(double(es_hipoxia), ventanaExclusion * 2) > 0;
         
         fl = diff([0; fus; 0]); iI = find(fl==1); iF = find(fl==-1)-1;
         iIU = []; iFU = [];
         
-        % 3. Fusión Microcortes
         if ~isempty(iI)
             cA = iI(1); cF = iF(1);
             for i = 2:length(iI)
@@ -606,12 +685,10 @@ function AVA_Core_System()
             iIU(end+1,1)=cA; iFU(end+1,1)=cF;
         end
         
-        % 4. Validación de Duración + EXCLUSIÓN RESPIRATORIA
         mPlm_Candidatos = []; 
         for i = 1:length(iIU)
             dur = (iFU(i) - iIU(i)) / fs; 
             if dur >= 0.5 && dur <= 10.0
-                % Si hay un evento de hipoxia superpuesto o cercano, descartar el movimiento
                 if sum(exclusionRespiratoria(iIU(i):iFU(i))) == 0
                     mPlm_Candidatos = [mPlm_Candidatos; iIU(i), iFU(i)]; %#ok<AGROW>
                 end
@@ -620,7 +697,6 @@ function AVA_Core_System()
         
         mEpi = []; validosPLM = []; 
         
-        % 5. Regla de Periodicidad
         if ~isempty(mPlm_Candidatos)
             rt = mPlm_Candidatos(1,:);
             for j = 2:size(mPlm_Candidatos,1)
@@ -689,7 +765,6 @@ function AVA_Core_System()
         if isfield(R, 'UdpControl') && ~isempty(R.UdpControl) && isvalid(R.UdpControl), clear R.UdpControl; end
         if isfield(R, 'UdpTobillo') && ~isempty(R.UdpTobillo) && isvalid(R.UdpTobillo), clear R.UdpTobillo; end
         if isfield(R, 'UdpBiceps') && ~isempty(R.UdpBiceps) && isvalid(R.UdpBiceps), clear R.UdpBiceps; end
-        logSistema('INFO', 'CleanUp exitoso.');
     end
 
     function cerrarAplicacion(src, ~)
