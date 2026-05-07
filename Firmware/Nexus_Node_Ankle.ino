@@ -1,13 +1,15 @@
 /*
  * DISPOSITIVO TOBILLO: MPU6050 + EMG
- * V3.0 PRODUCTION: Sincronización robusta, filtros desacoplados, validación
- * Envía: Tiempo_ms,Ax,Ay,Az,EMG,CRC16\n
+ * V3.1 PRODUCTION: Sin Strings, NTP Sync, Buffers Estáticos (C-Style)
+ * Envía: Timestamp_UNIX,Ax,Ay,Az,EMG,CRC16\n
  */
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <time.h>
+#include <sys/time.h>
 
 // --- CONFIGURACIÓN ---
 const char* ssid = "TU_SSID_AQUI";
@@ -24,40 +26,32 @@ const int PIN_EMG = 4; // ADC1_CH3 en ESP32
 
 // --- PARÁMETROS DE MUESTREO ---
 const int FRECUENCIA_HZ = 50;
-const unsigned long INTERVALO_MS = 1000 / FRECUENCIA_HZ; // 20ms
+// Usamos microsegundos para evitar deriva en el tiempo de muestreo
+const unsigned long INTERVALO_US = 1000000 / FRECUENCIA_HZ; // 20,000 us
 
-// --- GESTIÓN DE TIEMPO ROBUSTO ---
-struct {
-  uint64_t ms_total = 0;
-  uint32_t ms_last = 0;
-  
-  uint64_t getTotalMs() {
-    uint32_t ms_now = millis();
-    if (ms_now < ms_last) ms_total += 4294967296ULL;
-    ms_last = ms_now;
-    return ms_total + ms_now;
-  }
-} timeManager;
+// --- NTP SYNC ---
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 0; // Guardamos en UTC puro para sincronizar en MATLAB
+const int   daylightOffset_sec = 0;
 
 // --- FILTRADO SEPARADO ---
-// Nota: DLPF nativa en MPU6050 @ 21 Hz ya está activa
-// No aplicamos EMA adicional para evitar cascada de filtros
 struct {
   float ax_last = 0, ay_last = 0, az_last = 0, emg_last = 0;
   bool first_read = true;
 } filters;
 
-// --- BATCHING ---
+// --- BATCHING ESTÁTICO (C-Style) ---
 const int TAMANO_LOTE = 5;
 int contador = 0;
-String payload = "";
-unsigned long ultimo_muestreo = 0;
+char payload[512]; // Buffer estático en lugar de String
+int payload_len = 0;
+unsigned long ultimo_muestreo_us = 0;
 
-// --- CRC16 ---
-uint16_t crc16(String data) {
+// --- CRC16 ESTÁTICO ---
+uint16_t crc16(const char* data, int len) {
   uint16_t crc = 0xFFFF;
-  for (int i = 0; i < data.length(); i++) {
-    crc ^= (uint16_t)data[i];
+  for (int i = 0; i < len; i++) {
+    crc ^= (uint8_t)data[i];
     for (int j = 0; j < 8; j++) {
       if (crc & 0x0001) crc = (crc >> 1) ^ 0xA001;
       else crc >>= 1;
@@ -84,9 +78,19 @@ void setup() {
   }
   Serial.println("\n[OK] WiFi Conectado!");
 
+  // --- SINCRONIZACIÓN NTP ---
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  struct tm timeinfo;
+  Serial.print("Sincronizando hora NTP");
+  while (!getLocalTime(&timeinfo)) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("\n[OK] Hora NTP Sincronizada!");
+
   // Inicializar I2C y MPU6050
   Wire.begin(21, 22);
-  Wire.setClock(400000); // MPU6050 soporta 400kHz
+  Wire.setClock(400000); // 400kHz I2C Fast Mode
 
   if (!mpu.begin()) {
     Serial.println("[ERROR] MPU6050 no encontrado!");
@@ -99,25 +103,31 @@ void setup() {
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ); // DLPF nativa
 
   analogReadResolution(12);
-  payload.reserve(300);
 
-  ultimo_muestreo = millis();
+  ultimo_muestreo_us = micros();
 
-  // Enviar SYNC a MATLAB
-  delay(500);
+  // Enviar SYNC a MATLAB con timestamp UNIX real
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  char sync_msg[100];
+  snprintf(sync_msg, sizeof(sync_msg), "SYNC,TOBILLO,%lld.%06ld\n", (long long)tv.tv_sec, (long)tv.tv_usec);
+  
   udp_control.beginPacket(ip_matlab, puerto_control);
-  udp_control.print("SYNC,TOBILLO,");
-  udp_control.print(timeManager.getTotalMs());
-  udp_control.print("\n");
+  udp_control.print(sync_msg);
   udp_control.endPacket();
   Serial.println("[OK] SYNC enviado a MATLAB");
+  
+  // Limpiar buffer
+  payload_len = 0;
+  memset(payload, 0, sizeof(payload));
 }
 
 void loop() {
-  unsigned long t_actual = millis();
+  unsigned long t_actual = micros();
 
-  if (t_actual - ultimo_muestreo >= INTERVALO_MS) {
-    ultimo_muestreo = t_actual;
+  // Control estricto por microsegundos
+  if (t_actual - ultimo_muestreo_us >= INTERVALO_US) {
+    ultimo_muestreo_us = t_actual;
 
     sensors_event_t a, g, temp;
     mpu.getEvent(&a, &g, &temp);
@@ -133,43 +143,47 @@ void loop() {
       return;
     }
 
-    // Inicializar filtros
     if (filters.first_read) {
-      filters.ax_last = ax;
-      filters.ay_last = ay;
-      filters.az_last = az;
-      filters.emg_last = emg_raw;
       filters.first_read = false;
-      return; // Saltar la primera muestra
+      return; // Saltar la primera muestra para evitar artefactos
     }
 
-    // NO aplicar EMA adicional - confiar en DLPF del MPU6050
-    // Los datos ya están filtrados a 21 Hz
+    // Obtener Tiempo UNIX Real (Segundos + Microsegundos)
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
 
-    uint64_t t_ms = timeManager.getTotalMs();
-    String linea = String(t_ms) + "," + 
-                   String(ax, 2) + "," + 
-                   String(ay, 2) + "," + 
-                   String(az, 2) + "," + 
-                   String(emg_raw);
-    String linea_con_crc = linea + "," + String(crc16(linea), HEX) + "\n";
-    
-    payload += linea_con_crc;
+    // Formatear línea usando C-strings puros
+    char linea[128];
+    int len = snprintf(linea, sizeof(linea), "%lld.%06ld,%.2f,%.2f,%.2f,%d", 
+                       (long long)tv.tv_sec, (long)tv.tv_usec, ax, ay, az, emg_raw);
+
+    // Calcular CRC de la línea
+    uint16_t crc = crc16(linea, len);
+
+    // Añadir línea + CRC al payload estático
+    int added = snprintf(payload + payload_len, sizeof(payload) - payload_len, "%s,%04X\n", linea, crc);
+    if (added > 0 && added < (sizeof(payload) - payload_len)) {
+        payload_len += added;
+    }
+
     contador++;
 
+    // Enviar lote
     if (contador >= TAMANO_LOTE) {
       udp_datos.beginPacket(ip_matlab, puerto_datos);
-      udp_datos.print(payload);
+      // Escribir el buffer completo directamente
+      udp_datos.write((const uint8_t*)payload, payload_len);
       udp_datos.endPacket();
 
-      payload = "";
+      // Reiniciar buffer estático
+      payload_len = 0;
       contador = 0;
     }
 
-    // Verificación de salud I2C cada 100 muestras
+    // Verificación de salud I2C cada 100 muestras (sin try-catch)
     static int health_check = 0;
     if (++health_check >= 100) {
-      Wire.beginTransmission(0x68); // Dirección MPU6050
+      Wire.beginTransmission(0x68); 
       if (Wire.endTransmission() != 0) {
         Serial.println("[WARN] I2C check failed!");
         udp_control.beginPacket(ip_matlab, puerto_control);
@@ -180,6 +194,4 @@ void loop() {
       health_check = 0;
     }
   }
-
-  delay(1); // Yield
 }
