@@ -58,4 +58,4 @@ Pensado para la usabilidad clínica en entornos domiciliarios, el sistema incluy
 ---
 ## ⚖ Licencia
 
-Este proyecto está bajo la Licencia MIT. Consulta el archivo [LICENSE](LICENSE) para más detalles.
+Este proyecto está bajo la Apache License 2.0. Consulta el archivo [LICENSE](LICENSE) para más detalles.
