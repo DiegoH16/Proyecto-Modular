@@ -61,5 +61,5 @@ Pensado para la usabilidad clínica en entornos domiciliarios, el sistema incluy
 Este proyecto está bajo la [Apache License 2.0]. Consulta el archivo [LICENSE](LICENSE) para más detalles.
 
 ## Aviso Legal (Disclaimer)
-    Este software se proporciona con fines de investigación académica en el área del Síndrome de Piernas Inquietas (SPI). 
-    **IMPORTANTE:** No es un dispositivo médico certificado. Los autores no asumen responsabilidad por diagnósticos o decisiones clínicas tomadas con base en el análisis de estas señales biométricas. El uso en entornos médicos debe ser supervisado por personal de salud certificado.
+Este software se proporciona con fines de investigación académica en el área del Síndrome de Piernas Inquietas (SPI). 
+**IMPORTANTE:** No es un dispositivo médico certificado. Los autores no asumen responsabilidad por diagnósticos o decisiones clínicas tomadas con base en el análisis de estas señales biométricas. El uso en entornos médicos debe ser supervisado por personal de salud certificado.
