@@ -523,18 +523,24 @@ function AVA_Core_System()
     
     %% --- 6. FUNCIONES SECUNDARIAS (INCLUYE TELEMETRÍA) ---
     
-    function dataOut = leerYValidarBatch(puerto, expectedCols, fusionarTiempo)
+   function dataOut = leerYValidarBatch(puerto, expectedCols, fusionarTiempo)
         dataOut = [];
         if isempty(puerto) || ~isvalid(puerto) || puerto.NumDatagramsAvailable == 0, return; end
         try
             origen = 'BICEPS'; if puerto.LocalPort == 8888, origen = 'TOBILLO'; end
             paquetes = read(puerto, min(puerto.NumDatagramsAvailable, 50)); 
             
-            % ✅ TELEMETRÍA EN TERMINAL (COMAND WINDOW)
+            % Telemetría
             fprintf('<<< RECIBIDO DE %s: %d datagramas [Port %d]\n', origen, length(paquetes), puerto.LocalPort);
         catch, return; end
         
-        matrizTemporal = NaN(length(paquetes) * 10, expectedCols - fusionarTiempo);
+        columnasFinales = expectedCols - 1; % Restamos 1 porque quitamos el CRC
+        if fusionarTiempo
+            columnasFinales = columnasFinales - 1; % Restamos 1 más porque Sec y uSec se vuelven una sola columna
+        end
+        
+        % Prealocación de memoria con el tamaño matemáticamente perfecto
+        matrizTemporal = NaN(length(paquetes) * 10, columnasFinales);
         indiceValido = 0;
         
         for p = 1:length(paquetes)
@@ -547,7 +553,6 @@ function AVA_Core_System()
                 if length(partes) ~= expectedCols, continue; end
                 if ~strcmp(m_crc16(strjoin(partes(1:end-1), ',')), partes{end}), continue; end
                 
-                % ✅ Monitor en terminal (Muestra 1 de cada 5 líneas validadas)
                 if mod(indiceValido, 5) == 0 
                     fprintf('    Validado: %s\n', strLine);
                 end
@@ -561,7 +566,7 @@ function AVA_Core_System()
                 
                 indiceValido = indiceValido + 1;
                 if indiceValido <= size(matrizTemporal, 1)
-                    matrizTemporal(indiceValido, :) = nums;
+                    matrizTemporal(indiceValido, :) = nums; % ¡Ahora 1x3 entra perfectamente en 1x3!
                 else
                     matrizTemporal = [matrizTemporal; nums]; %#ok<AGROW> 
                 end
