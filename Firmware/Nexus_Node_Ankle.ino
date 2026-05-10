@@ -29,7 +29,7 @@ const int puerto_control = 9999;
 WiFiUDP udp_datos, udp_control;
 Adafruit_MPU6050 mpu;
 
-const int PIN_EMG = 34; 
+const int PIN_EMG = 4; 
 const int FRECUENCIA_HZ = 100;
 const unsigned long INTERVALO_US = 1000000 / FRECUENCIA_HZ; // 10000 us
 
