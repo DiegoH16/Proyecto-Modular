@@ -20,10 +20,10 @@ function AVA_Core_System()
         'Puertos', struct('Tobillo', 8888, 'Biceps', 8889), ...
         'Muestreo', struct('Fs_Hz', 100, 'VentanaGrafica_s', 60), ...
         'BufferMax', struct('Horas', 10, 'Muestras', 100 * 3600 * 10), ...
-        'UI', struct('RefrescoGraficas_Muestras', 10, 'RefrescoVitales_Muestras', 25), ... % Gráficas a 10 fps, UI a 4 fps
-        'Backup', struct('MuestrasIntervalo', 100 * 300), ... % 5 minutos
+        'UI', struct('RefrescoGraficas_Muestras', 10, 'RefrescoVitales_Muestras', 25), ... 
+        'Backup', struct('MuestrasIntervalo', 100 * 300), ... 
         'Umbrales', struct('IR_Minimo_Dedo', 3000, 'EMG_Contraccion', 50, 'SVM_Movimiento', 0.4), ...
-        'Filtros', struct('Alpha_SVM', 0.005, 'Alpha_EMG_HP', 0.05, 'Alpha_EMG_LP', 0.1) ... % Alphas restaurados a 100Hz
+        'Filtros', struct('Alpha_SVM', 0.005, 'Alpha_EMG_HP', 0.05, 'Alpha_EMG_LP', 0.1) ... 
     );
 
     %% --- 2. ESTADO GLOBAL Y RING BUFFER EXPANDIDO ---
@@ -44,9 +44,8 @@ function AVA_Core_System()
         'DSP', struct('EMG_Baseline', 0, 'EMG_Envelope', 0, 'SVM_Baseline', 1.0), ...
         'Vitales', struct('UltimoRed', 0, 'UltimoIR', 0, 'SPO2', NaN, 'BPM', NaN, ...
                           'SPO2_UI', NaN, 'BPM_UI', NaN, ... 
-                          'BufferRed', zeros(1, Config.Muestreo.Fs_Hz * 30), ...
-                          'BufferIR', zeros(1, Config.Muestreo.Fs_Hz * 30)), ...
-        'UI', struct('ContraccionPrevia', false, 'MuestrasRecibidas', 0, ...
+                          'BufferRed', [], 'BufferIR', []), ... % Inicializados vacíos para evitar el artefacto de los ceros
+        'UI', struct('ContraccionPrevia', false, 'MuestrasTobillo', 0, 'MuestrasBiceps', 0, ...
                      'MuestrasDesdeUltimoBackup', 0, 'SPO2Text', '', 'BPMText', '') ...
     );
 
@@ -58,7 +57,7 @@ function AVA_Core_System()
 
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
     UI = struct();
-    UI.Fig = uifigure('Name', 'AVA Nexus', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
+    UI.Fig = uifigure('Name', 'AVA Nexus V7.5 | Host-Sync Telemetry (100 Hz)', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @cerrarAplicacion;
     UI.AxesAnaLista = [];
 
@@ -75,7 +74,7 @@ function AVA_Core_System()
     UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Envolvente (AD8232 + DSP)'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 3];
     UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM (DSP)'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 3];
 
-    numPuntosGrafica = 6000; % Restaurado para 60 segundos a 100Hz
+    numPuntosGrafica = 6000; 
     UI.lineaEMG = animatedline(UI.axEMG_TR, 'Color', [1 0.5 0], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     UI.lineaSVM = animatedline(UI.axSVM_TR, 'Color', [0 0.4 1], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
 
@@ -116,130 +115,153 @@ function AVA_Core_System()
     uibutton(gToolbar, 'Text', 'Volver', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
     UI.pnlGraficasAna = uipanel(gAna, 'BorderType', 'none', 'BackgroundColor', 'w');
 
-    %% --- 4. BUCLE PRINCIPAL ---
+    %% --- 4. BUCLE PRINCIPAL (DESACOPLADO) ---
     while ishandle(UI.Fig)
         if Estado.Capturando 
             try
                 lineasB = leerYValidarBatch(Red.UdpBiceps, 5); 
                 lineasT = leerYValidarBatch(Red.UdpTobillo, 7); 
                 
-                for i = 1:size(lineasB, 1)
-                    red_raw = lineasB(i, 3); ir_raw = lineasB(i, 4);
-                    Estado.Vitales.UltimoRed = red_raw;
-                    Estado.Vitales.UltimoIR  = ir_raw;
-                    Estado.Vitales.BufferRed = [Estado.Vitales.BufferRed(2:end), red_raw]; 
-                    Estado.Vitales.BufferIR  = [Estado.Vitales.BufferIR(2:end), ir_raw];
-                    Estado.DedoDetectado = (ir_raw > Config.Umbrales.IR_Minimo_Dedo);
+                % ==============================================================
+                % 1. PROCESAMIENTO DEL BÍCEPS (TOTALMENTE INDEPENDIENTE)
+                % ==============================================================
+                if ~isempty(lineasB)
+                    for i = 1:size(lineasB, 1)
+                        red_raw = lineasB(i, 3); ir_raw = lineasB(i, 4);
+                        Estado.Vitales.UltimoRed = red_raw;
+                        Estado.Vitales.UltimoIR  = ir_raw;
+                        
+                        % Crecimiento dinámico del buffer
+                        Estado.Vitales.BufferRed = [Estado.Vitales.BufferRed, red_raw]; 
+                        Estado.Vitales.BufferIR  = [Estado.Vitales.BufferIR, ir_raw];
+                        
+                        % Límite de 30 segundos
+                        if length(Estado.Vitales.BufferRed) > Config.Muestreo.Fs_Hz * 30
+                            Estado.Vitales.BufferRed = Estado.Vitales.BufferRed(2:end);
+                            Estado.Vitales.BufferIR  = Estado.Vitales.BufferIR(2:end);
+                        end
+                        
+                        Estado.DedoDetectado = (ir_raw > Config.Umbrales.IR_Minimo_Dedo);
+                        Estado.UI.MuestrasBiceps = Estado.UI.MuestrasBiceps + 1;
+
+                        % --- ACTUALIZACIÓN DE UI DEL BÍCEPS ---
+                        if mod(Estado.UI.MuestrasBiceps, Config.UI.RefrescoVitales_Muestras) == 0 
+                            [tempSPO2, tempBPM, is_artifact] = detectarBPMRobusto(Estado.Vitales.BufferRed, Estado.Vitales.BufferIR, Config.Muestreo.Fs_Hz); 
+                            
+                            if Estado.DedoDetectado
+                                if ~is_artifact && ~isnan(tempSPO2) && ~isnan(tempBPM)
+                                    Estado.Vitales.SPO2 = tempSPO2; Estado.Vitales.BPM = tempBPM;
+                                    
+                                    if isnan(Estado.Vitales.SPO2_UI)
+                                        Estado.Vitales.SPO2_UI = tempSPO2;
+                                        Estado.Vitales.BPM_UI = tempBPM;
+                                    else
+                                        Estado.Vitales.SPO2_UI = 0.8 * Estado.Vitales.SPO2_UI + 0.2 * tempSPO2;
+                                        Estado.Vitales.BPM_UI  = 0.8 * Estado.Vitales.BPM_UI  + 0.2 * tempBPM;
+                                    end
+                                    
+                                    nuevoSPO2 = sprintf('%.0f%% SpO2', Estado.Vitales.SPO2_UI); 
+                                    nuevoBPM = sprintf('%.0f BPM', Estado.Vitales.BPM_UI);
+                                    UI.lblSPO2.FontColor = [0 0.4 0.8]; 
+                                else
+                                    nuevoSPO2 = sprintf('%.0f%% (RUIDO)', Estado.Vitales.SPO2_UI); 
+                                    nuevoBPM = sprintf('%.0f (RUIDO)', Estado.Vitales.BPM_UI);
+                                    UI.lblSPO2.FontColor = [0.8 0.4 0]; 
+                                end
+                            else
+                                nuevoSPO2 = 'SIN DEDO'; nuevoBPM = '--- BPM'; UI.lblSPO2.FontColor = [0.8 0.2 0.2]; 
+                                Estado.Vitales.SPO2 = NaN; Estado.Vitales.BPM = NaN;
+                                Estado.Vitales.SPO2_UI = NaN; Estado.Vitales.BPM_UI = NaN;
+                            end
+                            
+                            if ~strcmp(Estado.UI.SPO2Text, nuevoSPO2), UI.lblSPO2.Text = nuevoSPO2; Estado.UI.SPO2Text = nuevoSPO2; end
+                            if ~strcmp(Estado.UI.BPMText, nuevoBPM), UI.lblBPM.Text = nuevoBPM; Estado.UI.BPMText = nuevoBPM; end
+                        end
+                    end
                 end
 
-                for i = 1:size(lineasT, 1)
-                    t_abs = lineasT(i, 1) + lineasT(i, 2) / 1e6;
-                    if isnan(Estado.t0_Tobillo) || t_abs < Estado.t0_Tobillo
-                        Estado.t0_Tobillo = t_abs; 
-                    end
-                    tRelativo = t_abs - Estado.t0_Tobillo;
-                    
-                    ax = lineasT(i,3); ay = lineasT(i,4); az = lineasT(i,5); emg_crudo = lineasT(i,6);
-                    
-                    Estado.DSP.EMG_Baseline = (1 - Config.Filtros.Alpha_EMG_HP) * Estado.DSP.EMG_Baseline + (Config.Filtros.Alpha_EMG_HP * emg_crudo);
-                    emg_ac = abs(emg_crudo - Estado.DSP.EMG_Baseline); 
-                    Estado.DSP.EMG_Envelope = (1 - Config.Filtros.Alpha_EMG_LP) * Estado.DSP.EMG_Envelope + (Config.Filtros.Alpha_EMG_LP * emg_ac);
-                    
-                    svm_crudo = sqrt(ax^2 + ay^2 + az^2);
-                    Estado.DSP.SVM_Baseline = (1 - Config.Filtros.Alpha_SVM) * Estado.DSP.SVM_Baseline + (Config.Filtros.Alpha_SVM * svm_crudo);
-                    svm_ac = abs(svm_crudo - Estado.DSP.SVM_Baseline);
-                    
-                    if Estado.Calibracion.Activa
-                        Estado.Calibracion.Cuenta = Estado.Calibracion.Cuenta + 1;
-                        if Estado.Calibracion.Cuenta > Estado.Calibracion.MuestrasDescarte
-                            idx = Estado.Calibracion.Cuenta - Estado.Calibracion.MuestrasDescarte;
-                            Estado.Calibracion.EMG_Data(idx) = Estado.DSP.EMG_Envelope;
-                            Estado.Calibracion.SVM_Data(idx) = svm_ac;
+                % ==============================================================
+                % 2. PROCESAMIENTO DEL TOBILLO (RELOJ MAESTRO DEL ESTUDIO)
+                % ==============================================================
+                if ~isempty(lineasT)
+                    for i = 1:size(lineasT, 1)
+                        t_abs = lineasT(i, 1) + lineasT(i, 2) / 1e6;
+                        if isnan(Estado.t0_Tobillo) || t_abs < Estado.t0_Tobillo
+                            Estado.t0_Tobillo = t_abs; 
                         end
+                        tRelativo = t_abs - Estado.t0_Tobillo;
                         
-                        pct = round(100 * Estado.Calibracion.Cuenta / Estado.Calibracion.MuestrasRequeridas);
-                        if Estado.Calibracion.Cuenta <= Estado.Calibracion.MuestrasDescarte
-                            UI.lblInfo.Text = sprintf('ESTABILIZANDO SEÑAL... %d%%', pct); UI.lblInfo.FontColor = [0.8 0.1 0];
-                        else
-                            UI.lblInfo.Text = sprintf('CALIBRANDO UMBRALES... %d%%', pct); UI.lblInfo.FontColor = [0.8 0.4 0];
-                        end
+                        ax = lineasT(i,3); ay = lineasT(i,4); az = lineasT(i,5); emg_crudo = lineasT(i,6);
                         
-                        if Estado.Calibracion.Cuenta >= Estado.Calibracion.MuestrasRequeridas
-                            std_emg = std(Estado.Calibracion.EMG_Data); std_svm = std(Estado.Calibracion.SVM_Data);
-                            if std_emg > 80 || std_svm > 0.5 
-                                UI.lblInfo.Text = '¡RUIDO EXCESIVO! REINICIANDO...'; UI.lblInfo.FontColor = [1 0 0];
-                                Estado.Calibracion.Cuenta = 0; 
-                            else
-                                Config.Umbrales.EMG_Contraccion = max(10, mean(Estado.Calibracion.EMG_Data) + 5 * std_emg);
-                                Config.Umbrales.SVM_Movimiento  = max(0.1, mean(Estado.Calibracion.SVM_Data) + 5 * std_svm);
-                                Estado.Calibracion.Activa = false;
-                                UI.lblInfo.Text = sprintf('Thr EMG: %.1f | Thr SVM: %.2f', Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento);
-                                UI.lblInfo.FontColor = [0 0.6 0];
-                            end
-                        end
-                    end
-                    
-                    contraccionActual = (Estado.DSP.EMG_Envelope > Config.Umbrales.EMG_Contraccion) && (svm_ac > Config.Umbrales.SVM_Movimiento);
-                    addpoints(UI.lineaEMG, tRelativo, Estado.DSP.EMG_Envelope);
-                    addpoints(UI.lineaSVM, tRelativo, svm_ac);
-                    
-                    if mod(Estado.UI.MuestrasRecibidas, Config.UI.RefrescoGraficas_Muestras) == 0
-                        if contraccionActual ~= Estado.UI.ContraccionPrevia
-                            if contraccionActual
-                                UI.lblLed.BackgroundColor = [0.2 0.8 0.2]; UI.lblLed.Text = ' CONTRACCIÓN ';
-                            else
-                                UI.lblLed.BackgroundColor = [0.8 0.2 0.2]; UI.lblLed.Text = ' REPOSO ';
-                            end
-                            Estado.UI.ContraccionPrevia = contraccionActual;
-                        end
-                        actualizarEjesGrafica([UI.axEMG_TR, UI.axSVM_TR], tRelativo, Config.Muestreo.VentanaGrafica_s);
-                    end
-                    
-                    if mod(Estado.UI.MuestrasRecibidas, Config.UI.RefrescoVitales_Muestras) == 0 
-                        [tempSPO2, tempBPM, is_artifact] = detectarBPMRobusto(Estado.Vitales.BufferRed, Estado.Vitales.BufferIR, Config.Muestreo.Fs_Hz); 
+                        Estado.DSP.EMG_Baseline = (1 - Config.Filtros.Alpha_EMG_HP) * Estado.DSP.EMG_Baseline + (Config.Filtros.Alpha_EMG_HP * emg_crudo);
+                        emg_ac = abs(emg_crudo - Estado.DSP.EMG_Baseline); 
+                        Estado.DSP.EMG_Envelope = (1 - Config.Filtros.Alpha_EMG_LP) * Estado.DSP.EMG_Envelope + (Config.Filtros.Alpha_EMG_LP * emg_ac);
+                        
+                        svm_crudo = sqrt(ax^2 + ay^2 + az^2);
+                        Estado.DSP.SVM_Baseline = (1 - Config.Filtros.Alpha_SVM) * Estado.DSP.SVM_Baseline + (Config.Filtros.Alpha_SVM * svm_crudo);
+                        svm_ac = abs(svm_crudo - Estado.DSP.SVM_Baseline);
+                        
                         if Estado.Calibracion.Activa
-                            nuevoSPO2 = '--% (Calibrando)'; nuevoBPM = '-- (Calibrando)'; UI.lblSPO2.FontColor = [0.5 0.5 0.5]; 
-                        elseif Estado.DedoDetectado
-                            if ~is_artifact && ~isnan(tempSPO2) && ~isnan(tempBPM)
-                                Estado.Vitales.SPO2 = tempSPO2; Estado.Vitales.BPM = tempBPM;
-                                
-                                if isnan(Estado.Vitales.SPO2_UI)
-                                    Estado.Vitales.SPO2_UI = tempSPO2;
-                                    Estado.Vitales.BPM_UI = tempBPM;
-                                else
-                                    Estado.Vitales.SPO2_UI = 0.8 * Estado.Vitales.SPO2_UI + 0.2 * tempSPO2;
-                                    Estado.Vitales.BPM_UI  = 0.8 * Estado.Vitales.BPM_UI  + 0.2 * tempBPM;
-                                end
-                                
-                                nuevoSPO2 = sprintf('%.0f%% SpO2', Estado.Vitales.SPO2_UI); 
-                                nuevoBPM = sprintf('%.0f BPM', Estado.Vitales.BPM_UI);
-                                UI.lblSPO2.FontColor = [0 0.4 0.8]; 
-                            else
-                                nuevoSPO2 = sprintf('%.0f%% (RUIDO)', Estado.Vitales.SPO2_UI); 
-                                nuevoBPM = sprintf('%.0f (RUIDO)', Estado.Vitales.BPM_UI);
-                                UI.lblSPO2.FontColor = [0.8 0.4 0]; 
+                            Estado.Calibracion.Cuenta = Estado.Calibracion.Cuenta + 1;
+                            if Estado.Calibracion.Cuenta > Estado.Calibracion.MuestrasDescarte
+                                idx = Estado.Calibracion.Cuenta - Estado.Calibracion.MuestrasDescarte;
+                                Estado.Calibracion.EMG_Data(idx) = Estado.DSP.EMG_Envelope;
+                                Estado.Calibracion.SVM_Data(idx) = svm_ac;
                             end
-                        else
-                            nuevoSPO2 = 'SIN DEDO'; nuevoBPM = '--- BPM'; UI.lblSPO2.FontColor = [0.8 0.2 0.2]; 
-                            Estado.Vitales.SPO2 = NaN; Estado.Vitales.BPM = NaN;
-                            Estado.Vitales.SPO2_UI = NaN; Estado.Vitales.BPM_UI = NaN;
+                            
+                            pct = round(100 * Estado.Calibracion.Cuenta / Estado.Calibracion.MuestrasRequeridas);
+                            if Estado.Calibracion.Cuenta <= Estado.Calibracion.MuestrasDescarte
+                                UI.lblInfo.Text = sprintf('ESTABILIZANDO SEÑAL... %d%%', pct); UI.lblInfo.FontColor = [0.8 0.1 0];
+                            else
+                                UI.lblInfo.Text = sprintf('CALIBRANDO UMBRALES... %d%%', pct); UI.lblInfo.FontColor = [0.8 0.4 0];
+                            end
+                            
+                            if Estado.Calibracion.Cuenta >= Estado.Calibracion.MuestrasRequeridas
+                                std_emg = std(Estado.Calibracion.EMG_Data); std_svm = std(Estado.Calibracion.SVM_Data);
+                                if std_emg > 80 || std_svm > 0.5 
+                                    UI.lblInfo.Text = '¡RUIDO EXCESIVO! REINICIANDO...'; UI.lblInfo.FontColor = [1 0 0];
+                                    Estado.Calibracion.Cuenta = 0; 
+                                else
+                                    Config.Umbrales.EMG_Contraccion = max(10, mean(Estado.Calibracion.EMG_Data) + 5 * std_emg);
+                                    Config.Umbrales.SVM_Movimiento  = max(0.1, mean(Estado.Calibracion.SVM_Data) + 5 * std_svm);
+                                    Estado.Calibracion.Activa = false;
+                                    UI.lblInfo.Text = sprintf('Thr EMG: %.1f | Thr SVM: %.2f', Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento);
+                                    UI.lblInfo.FontColor = [0 0.6 0];
+                                end
+                            end
                         end
                         
-                        if ~strcmp(Estado.UI.SPO2Text, nuevoSPO2), UI.lblSPO2.Text = nuevoSPO2; Estado.UI.SPO2Text = nuevoSPO2; end
-                        if ~strcmp(Estado.UI.BPMText, nuevoBPM), UI.lblBPM.Text = nuevoBPM; Estado.UI.BPMText = nuevoBPM; end
-                        mostrarMemoriaSegura();
+                        contraccionActual = (Estado.DSP.EMG_Envelope > Config.Umbrales.EMG_Contraccion) && (svm_ac > Config.Umbrales.SVM_Movimiento);
+                        addpoints(UI.lineaEMG, tRelativo, Estado.DSP.EMG_Envelope);
+                        addpoints(UI.lineaSVM, tRelativo, svm_ac);
+                        
+                        Estado.UI.MuestrasTobillo = Estado.UI.MuestrasTobillo + 1;
+
+                        % --- ACTUALIZACIÓN DE UI DEL TOBILLO ---
+                        if mod(Estado.UI.MuestrasTobillo, Config.UI.RefrescoGraficas_Muestras) == 0
+                            if contraccionActual ~= Estado.UI.ContraccionPrevia
+                                if contraccionActual
+                                    UI.lblLed.BackgroundColor = [0.2 0.8 0.2]; UI.lblLed.Text = ' CONTRACCIÓN ';
+                                else
+                                    UI.lblLed.BackgroundColor = [0.8 0.2 0.2]; UI.lblLed.Text = ' REPOSO ';
+                                end
+                                Estado.UI.ContraccionPrevia = contraccionActual;
+                            end
+                            actualizarEjesGrafica([UI.axEMG_TR, UI.axSVM_TR], tRelativo, Config.Muestreo.VentanaGrafica_s);
+                            mostrarMemoriaSegura();
+                        end
+                        
+                        % --- GUARDADO EN BUFFER (Sincronizado al reloj del Tobillo) ---
+                        Estado.UI.MuestrasDesdeUltimoBackup = Estado.UI.MuestrasDesdeUltimoBackup + 1;
+                        if Estado.UI.MuestrasDesdeUltimoBackup > Config.Backup.MuestrasIntervalo
+                            backupIncrementalOptimizado(RingBuffer, Estado.UltimoBackupIdx, Config.BufferMax.Muestras);
+                            Estado.UltimoBackupIdx = RingBuffer.Idx;
+                            Estado.UI.MuestrasDesdeUltimoBackup = 0;
+                        end
+                        
+                        guardarEnRingBuffer(tRelativo, ax, ay, az, emg_crudo, Estado.Vitales.UltimoRed, Estado.Vitales.UltimoIR, ...
+                                            Estado.DSP.EMG_Envelope, svm_ac, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
                     end
-                    
-                    Estado.UI.MuestrasDesdeUltimoBackup = Estado.UI.MuestrasDesdeUltimoBackup + 1;
-                    if Estado.UI.MuestrasDesdeUltimoBackup > Config.Backup.MuestrasIntervalo
-                        backupIncrementalOptimizado(RingBuffer, Estado.UltimoBackupIdx, Config.BufferMax.Muestras);
-                        Estado.UltimoBackupIdx = RingBuffer.Idx;
-                        Estado.UI.MuestrasDesdeUltimoBackup = 0;
-                    end
-                    
-                    guardarEnRingBuffer(tRelativo, ax, ay, az, emg_crudo, Estado.Vitales.UltimoRed, Estado.Vitales.UltimoIR, ...
-                                        Estado.DSP.EMG_Envelope, svm_ac, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
-                    Estado.UI.MuestrasRecibidas = Estado.UI.MuestrasRecibidas + 1;
                 end
             catch ME
                 logSistema('WARN', ['Excepción: ', ME.message]);
@@ -256,7 +278,9 @@ function AVA_Core_System()
             Estado.t0_Tobillo = NaN; 
             Estado.Calibracion.Activa = true; Estado.Calibracion.Cuenta = 0;
             Estado.DSP.EMG_Baseline = 0; Estado.DSP.EMG_Envelope = 0; Estado.DSP.SVM_Baseline = 1.0; 
-            Estado.UI.ContraccionPrevia = false; Estado.UI.MuestrasRecibidas = 0; Estado.UI.MuestrasDesdeUltimoBackup = 0;
+            Estado.UI.ContraccionPrevia = false; 
+            Estado.UI.MuestrasTobillo = 0; Estado.UI.MuestrasBiceps = 0; Estado.UI.MuestrasDesdeUltimoBackup = 0;
+            Estado.Vitales.BufferRed = []; Estado.Vitales.BufferIR = [];
             Analisis.T = []; Analisis.Anotaciones = []; Analisis.EventosPLM = []; Analisis.IdxNav = 0;
 
             try 
@@ -294,7 +318,7 @@ function AVA_Core_System()
             [anotFinal, ~, ~] = procesarAASM(t_d, emgEnv_d, svmAc_d, spo2_d, Config.Muestreo.Fs_Hz, Config);
             
             fid = fopen(nameCSV, 'w');
-            fprintf(fid, '# AVA Nexus Data Lake (Hardware Timestamps)\n# Exportado: %s\n# Fs_Hz: %d\n# Thr_EMG: %.4f\n# Thr_SVM: %.4f\n', char(datetime('now')), Config.Muestreo.Fs_Hz, Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento);
+            fprintf(fid, '# AVA Nexus V7.5 Data Lake (Hardware Timestamps)\n# Exportado: %s\n# Fs_Hz: %d\n# Thr_EMG: %.4f\n# Thr_SVM: %.4f\n', char(datetime('now')), Config.Muestreo.Fs_Hz, Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento);
             fprintf(fid, 'Time_s_Abs,Ax,Ay,Az,EMG_Raw,Red_Raw,IR_Raw,EMG_Env,SVM_ac,SpO2_pct,BPM_bpm,AASM_SPI\n');
             for i = 1:length(t_d)
                 fprintf(fid, '%.6f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.6f,%.6f,%.0f,%.0f,%d\n', t_d(i), ax_d(i), ay_d(i), az_d(i), emgRaw_d(i), red_d(i), ir_d(i), emgEnv_d(i), svmAc_d(i), spo2_d(i), bpm_d(i), anotFinal(i));
@@ -417,13 +441,11 @@ function AVA_Core_System()
         % MinPeakDistance a fs*0.25 permite detectar hasta 240 BPM
         [~, locs] = findpeaks(bI_Filt, 'MinPeakHeight', umbral, 'MinPeakDistance', fs*0.25);
         
-        % Necesitamos al menos 5 picos para una estadística fiable
         if length(locs) < 5, return; end
         
-        % Calculamos el ritmo cardíaco
         bpmCalculado = 60 / (mean(diff(locs)) / fs);
         
-        % Límites fisiológicos reales: Bradicardia severa (30) a Taquicardia extrema (220)
+        % Rango fisiológico expandido (30 - 220 BPM)
         if bpmCalculado < 30 || bpmCalculado > 220, return; end
         
         bR_DC = movmean(bR, fs * 2); 
@@ -432,7 +454,6 @@ function AVA_Core_System()
         dcI = mean(bI_DC, 'omitnan');
         
         if dcR > 0 && dcI > 0
-            % Cálculo de SpO2 mediante Ratio de Ratios (RMS nativo)
             R = (rms(bR_AC) / dcR) / (rms(bI_AC) / dcI);
             spo2 = max(80, min(100, -45.060 * (R^2) + 30.354 * R + 94.845));
             bpm = bpmCalculado; 
