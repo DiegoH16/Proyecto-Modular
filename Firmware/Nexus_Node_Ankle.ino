@@ -12,10 +12,6 @@
      See the License for the specific language governing permissions and
      limitations under the License.
  */
-/*
- * DISPOSITIVO TOBILLO: MPU6050 + EMG AD8232 (V4.3 DIAGNÓSTICO PROFUNDO)
- * Solución de Core Dump, problemas de energía y tolerancia a fallos I2C.
- */
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
