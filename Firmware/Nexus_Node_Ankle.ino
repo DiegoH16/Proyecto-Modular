@@ -29,11 +29,16 @@ const int puerto_control = 9999;
 WiFiUDP udp_datos, udp_control;
 Adafruit_MPU6050 mpu;
 
-const int PIN_EMG = 4; 
+// --- NUEVA CONFIGURACIÓN DE PINES ---
+const int PIN_EMG = 4; // EMG 
+const int PIN_SDA = 8; // MPU6050 SDA
+const int PIN_SCL = 9; // MPU6050 SCL
+// ------------------------------------
+
 const int FRECUENCIA_HZ = 100;
 const unsigned long INTERVALO_US = 1000000 / FRECUENCIA_HZ; // 10000 us
 
-const int TAMANO_LOTE = 1; // Latencia CERO: un paquete por cada ciclo de 10ms
+const int TAMANO_LOTE = 1; // Latencia CERO
 int contador = 0;
 char payload[512]; 
 int payload_len = 0;
@@ -66,8 +71,9 @@ void setup() {
   delay(1000); 
   Serial.print("IP del Router: "); Serial.println(WiFi.softAPIP());
 
-  Serial.println("[Paso 2] Iniciando bus I2C (SDA=21, SCL=22)...");
-  Wire.begin(21, 22);
+  // Iniciar bus I2C con los nuevos pines
+  Serial.printf("[Paso 2] Iniciando bus I2C (SDA=%d, SCL=%d)...\n", PIN_SDA, PIN_SCL);
+  Wire.begin(PIN_SDA, PIN_SCL);
   Wire.setClock(100000); // 100kHz
   
   Wire.beginTransmission(0x68); 
@@ -75,7 +81,7 @@ void setup() {
   
   if (errorI2C == 0) {
     Serial.println("  -> Dispositivo detectado en 0x68. Inicializando MPU...");
-    if (mpu.begin()) {
+    if (mpu.begin(0x68, &Wire, 0)) { // Pasamos el bus I2C explícitamente por seguridad
         mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
         mpu.setGyroRange(MPU6050_RANGE_500_DEG);
         mpu.setFilterBandwidth(MPU6050_BAND_44_HZ); // Filtro adecuado para 100Hz
@@ -91,6 +97,8 @@ void setup() {
     mpu_ok = false;
   }
 
+  // Si usas un ESP32 clásico, la resolución por defecto es 12. 
+  // En ESP32-S2/S3 a veces es distinta, lo forzamos a 12 bits (0-4095)
   analogReadResolution(12);
 
   Serial.println("[Paso 3] Enviando mensaje SYNC UDP...");
