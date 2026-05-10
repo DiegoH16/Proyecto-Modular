@@ -397,43 +397,33 @@ function AVA_Core_System()
 
     function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
         spo2 = NaN; bpm = NaN; is_artifact = true;
+        
+        % Se requieren al menos 3 segundos de datos para estabilizar
         if length(bR) < fs * 3 || length(bI) < fs * 3, return; end
         
-        f_rms = @(x) sqrt(mean(x.^2, 'omitnan')); % RMS nativo sin Toolbox
-        
-        bI_DC = movmean(bI, fs * 2); bI_AC = bI - bI_DC; 
+        bI_DC = movmean(bI, fs * 2); 
+        bI_AC = bI - bI_DC; 
         bI_Filt = movmean(bI_AC, round(fs/10));
         
-        % Detección de picos nativa
+        % Detección de picos robusta con Signal Processing Toolbox
         umbral = std(bI_Filt, 'omitnan') * 0.5;
-        dx = diff(bI_Filt);
-        locs = find(dx(1:end-1) > 0 & dx(2:end) <= 0) + 1;
-        locs = locs(bI_Filt(locs) > umbral);
-        
-        % MinPeakDistance restrictivo (~170 BPM Max)
-        min_dist = fs * 0.35;
-        valid_locs = [];
-        if ~isempty(locs)
-            valid_locs = locs(1);
-            for p_idx = 2:length(locs)
-                if (locs(p_idx) - valid_locs(end)) >= min_dist
-                    valid_locs(end+1) = locs(p_idx);
-                end
-            end
-        end
-        locs = valid_locs;
+        [~, locs] = findpeaks(bI_Filt, 'MinPeakHeight', umbral, 'MinPeakDistance', fs*0.35);
         
         if length(locs) < 2 || length(locs) > 15, return; end
+        
         bpmCalculado = 60 / (mean(diff(locs)) / fs);
         if bpmCalculado < 40 || bpmCalculado > 200, return; end
         
-        bR_DC = movmean(bR, fs * 2); bR_AC = bR - bR_DC;
-        dcR = mean(bR_DC, 'omitnan'); dcI = mean(bI_DC, 'omitnan');
+        bR_DC = movmean(bR, fs * 2); 
+        bR_AC = bR - bR_DC;
+        dcR = mean(bR_DC, 'omitnan'); 
+        dcI = mean(bI_DC, 'omitnan');
         
         if dcR > 0 && dcI > 0
-            R = (f_rms(bR_AC) / dcR) / (f_rms(bI_AC) / dcI);
+            R = (rms(bR_AC) / dcR) / (rms(bI_AC) / dcI);
             spo2 = max(80, min(100, -45.060 * (R^2) + 30.354 * R + 94.845));
-            bpm = bpmCalculado; is_artifact = false;
+            bpm = bpmCalculado; 
+            is_artifact = false;
         end
     end
     
