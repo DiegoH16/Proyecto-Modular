@@ -55,41 +55,50 @@ uint16_t crc16(const char* data, int len) {
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  delay(2000); 
   
-  Serial.println("\n[SETUP] Iniciando Nodo Tobillo (AP)...");
+  Serial.println("\n\n--- INICIANDO DIAGNÓSTICO DE SETUP ---");
+  
+  Serial.println("[Paso 1] Encendiendo Antena Wi-Fi...");
   WiFi.mode(WIFI_AP);
+  delay(100);
   WiFi.softAP(ssid, password);
-  delay(500);
+  delay(1000); 
+  Serial.print("[Paso 1 OK] IP del Router: "); 
+  Serial.println(WiFi.softAPIP());
 
+  Serial.println("[Paso 2] Iniciando bus I2C (Pines 21 y 22)...");
   Wire.begin(21, 22);
-  Wire.setClock(400000); 
+  Wire.setClock(100000); 
+  Serial.println("[Paso 2 OK] Bus I2C iniciado.");
 
+  Serial.println("[Paso 3] Conectando con MPU6050...");
   if (!mpu.begin()) {
-    Serial.println("[ERROR] MPU6050 no encontrado. Reiniciando...");
-    delay(1000);
-    ESP.restart();
+    Serial.println("   -> [ADVERTENCIA] MPU6050 NO ENCONTRADO. Saltando...");
+    mpu_ok = false;
+  } else {
+    mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
+    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+    mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
+    mpu_ok = true;
+    Serial.println("   -> [Paso 3 OK] MPU6050 Configurado.");
   }
-
-  mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
 
   analogReadResolution(12);
 
-  // Mensaje SYNC inicial
+  Serial.println("[Paso 4] Configurando red UDP...");
   struct timeval tv; gettimeofday(&tv, NULL);
   char sync_msg[100];
   snprintf(sync_msg, sizeof(sync_msg), "SYNC,TOBILLO,%lld,%06ld\n", (long long)tv.tv_sec, (long)tv.tv_usec);
   udp_control.beginPacket(ip_broadcast, puerto_control);
   udp_control.print(sync_msg);
   udp_control.endPacket();
+  Serial.println("[Paso 4 OK] Mensaje SYNC enviado.");
 
   payload_len = 0; memset(payload, 0, sizeof(payload));
   ultimo_muestreo_us = micros();
   
   Serial.println(">>> TOBILLO INICIADO - MONITOR DE RED ACTIVO <<<");
-  Serial.print("IP del Router: "); Serial.println(WiFi.softAPIP());
 }
 
 void loop() {
