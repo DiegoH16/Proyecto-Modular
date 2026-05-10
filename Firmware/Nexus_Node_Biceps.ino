@@ -128,9 +128,12 @@ void loop() {
       udp_datos.write((const uint8_t*)payload, payload_len);
       udp_datos.endPacket();
       
-      // --- TELEMETRÍA EN TERMINAL ---
-      Serial.println("\n[TX BICEPS] Enviando lote UDP:");
-      Serial.print(payload);
+      // 👉 Indicador ligero de actividad (una línea cada ~50 ms, sin saturar)
+      static int lotesEnviados = 0;
+      lotesEnviados++;
+      if (lotesEnviados % 20 == 0) {  // imprime cada 20 lotes (cada 1 segundo)
+        Serial.printf("[BICEPS] %d lotes enviados\n", lotesEnviados);
+      }
       
       payload_len = 0; contador = 0; 
     }
