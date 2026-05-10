@@ -346,7 +346,7 @@ function AVA_Core_System()
 
     %% --- 6. PARSEO, CRC Y NATIVAS ---
     
-    function dataOut = leerYValidarBatch(puerto, expectedCols)
+   function dataOut = leerYValidarBatch(puerto, expectedCols)
         dataOut = [];
         if isempty(puerto) || ~isvalid(puerto) || puerto.NumDatagramsAvailable == 0, return; end
         try paquetes = read(puerto, min(puerto.NumDatagramsAvailable, 50)); catch, return; end
@@ -361,9 +361,11 @@ function AVA_Core_System()
                 str = strtrim(lineas(j));
                 if strlength(str) < 5 || startsWith(str, '#'), continue; end
                 
-                % Validación CRC de seguridad
-                idx_comma = strrfind(str, ',');
-                if isempty(idx_comma), continue; end
+                % Validación CRC de seguridad (Corregido para MATLAB)
+                idx_commas = strfind(str, ',');
+                if isempty(idx_commas), continue; end
+                idx_comma = idx_commas(end); % Tomamos el índice de la última coma
+                
                 data_str = extractBefore(str, idx_comma);
                 crc_str = extractAfter(str, idx_comma);
                 
