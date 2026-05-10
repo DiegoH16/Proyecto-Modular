@@ -44,7 +44,7 @@ function AVA_Core_System()
         'DSP', struct('EMG_Baseline', 0, 'EMG_Envelope', 0, 'SVM_Baseline', 1.0), ...
         'Vitales', struct('UltimoRed', 0, 'UltimoIR', 0, 'SPO2', NaN, 'BPM', NaN, ...
                           'SPO2_UI', NaN, 'BPM_UI', NaN, ... 
-                          'BufferRed', [], 'BufferIR', []), ... % Inicializados vacíos para evitar el artefacto de los ceros
+                          'BufferRed', [], 'BufferIR', []), ... 
         'UI', struct('ContraccionPrevia', false, 'MuestrasTobillo', 0, 'MuestrasBiceps', 0, ...
                      'MuestrasDesdeUltimoBackup', 0, 'SPO2Text', '', 'BPMText', '') ...
     );
@@ -131,11 +131,9 @@ function AVA_Core_System()
                         Estado.Vitales.UltimoRed = red_raw;
                         Estado.Vitales.UltimoIR  = ir_raw;
                         
-                        % Crecimiento dinámico del buffer
                         Estado.Vitales.BufferRed = [Estado.Vitales.BufferRed, red_raw]; 
                         Estado.Vitales.BufferIR  = [Estado.Vitales.BufferIR, ir_raw];
                         
-                        % Límite de 30 segundos
                         if length(Estado.Vitales.BufferRed) > Config.Muestreo.Fs_Hz * 30
                             Estado.Vitales.BufferRed = Estado.Vitales.BufferRed(2:end);
                             Estado.Vitales.BufferIR  = Estado.Vitales.BufferIR(2:end);
@@ -148,7 +146,11 @@ function AVA_Core_System()
                         if mod(Estado.UI.MuestrasBiceps, Config.UI.RefrescoVitales_Muestras) == 0 
                             [tempSPO2, tempBPM, is_artifact] = detectarBPMRobusto(Estado.Vitales.BufferRed, Estado.Vitales.BufferIR, Config.Muestreo.Fs_Hz); 
                             
-                            if Estado.DedoDetectado
+                            if Estado.Calibracion.Activa
+                                nuevoSPO2 = '--% (Calibrando)'; 
+                                nuevoBPM = '-- (Calibrando)'; 
+                                UI.lblSPO2.FontColor = [0.5 0.5 0.5]; 
+                            elseif Estado.DedoDetectado
                                 if ~is_artifact && ~isnan(tempSPO2) && ~isnan(tempBPM)
                                     Estado.Vitales.SPO2 = tempSPO2; Estado.Vitales.BPM = tempBPM;
                                     
