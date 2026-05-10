@@ -28,7 +28,7 @@ const int puerto_control = 9999;
 WiFiUDP udp_datos, udp_control;
 MAX30105 particleSensor;
 
-const int TAMANO_LOTE = 5;
+const int TAMANO_LOTE = 1;
 int contador = 0;
 char payload[512]; 
 int payload_len = 0;
