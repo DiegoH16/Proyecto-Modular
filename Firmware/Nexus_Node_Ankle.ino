@@ -12,13 +12,16 @@
      See the License for the specific language governing permissions and
      limitations under the License.
  */
+/*
+ * DISPOSITIVO TOBILLO: MPU6050 + EMG AD8232 (V4.3 DIAGNÓSTICO PROFUNDO)
+ * Solución de Core Dump, problemas de energía y tolerancia a fallos I2C.
+ */
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <sys/time.h>
-#include <math.h> 
 
 const char* ssid = "AVA_NEXUS";        
 const char* password = "ava_password"; 
@@ -30,16 +33,19 @@ const int puerto_control = 9999;
 WiFiUDP udp_datos, udp_control;
 Adafruit_MPU6050 mpu;
 
-// --- PINES Y MUESTREO (100 Hz) ---
-const int PIN_EMG = 4; 
+// ✅ CAMBIO DE PIN: El pin 4 causa problemas con el Wi-Fi. Usa el 34.
+const int PIN_EMG = 34; 
 const int FRECUENCIA_HZ = 100;
-const unsigned long INTERVALO_US = 1000000 / FRECUENCIA_HZ; // 10ms exactos
+const unsigned long INTERVALO_US = 1000000 / FRECUENCIA_HZ;
 
 const int TAMANO_LOTE = 5; 
 int contador = 0;
 char payload[512]; 
 int payload_len = 0;
 unsigned long ultimo_muestreo_us = 0;
+
+// ✅ CORRECCIÓN: Declaración de la bandera de estado del MPU
+bool mpu_ok = false;
 
 uint16_t crc16(const char* data, int len) {
   uint16_t crc = 0xFFFF;
@@ -55,67 +61,85 @@ uint16_t crc16(const char* data, int len) {
 
 void setup() {
   Serial.begin(115200);
-  delay(2000); 
+  delay(2000); // Retardo crucial para estabilizar voltajes
   
-  Serial.println("\n\n--- INICIANDO DIAGNÓSTICO DE SETUP ---");
+  Serial.println("\n--- INICIANDO NODO TOBILLO (AP) ---");
   
-  Serial.println("[Paso 1] Encendiendo Antena Wi-Fi...");
+  // 1. Iniciar Wi-Fi de forma gentil
+  Serial.println("[Paso 1] Encendiendo Wi-Fi...");
   WiFi.mode(WIFI_AP);
   delay(100);
   WiFi.softAP(ssid, password);
-  delay(1000); 
-  Serial.print("[Paso 1 OK] IP del Router: "); 
-  Serial.println(WiFi.softAPIP());
+  delay(1000); // Dejar que el pico de corriente pase
+  Serial.print("IP del Router: "); Serial.println(WiFi.softAPIP());
 
-  Serial.println("[Paso 2] Iniciando bus I2C (Pines 21 y 22)...");
+  // 2. Iniciar I2C con velocidad reducida por seguridad
+  Serial.println("[Paso 2] Iniciando bus I2C (SDA=21, SCL=22)...");
   Wire.begin(21, 22);
   Wire.setClock(100000); 
-  Serial.println("[Paso 2 OK] Bus I2C iniciado.");
-
-  Serial.println("[Paso 3] Conectando con MPU6050...");
-  if (!mpu.begin()) {
-    Serial.println("   -> [ADVERTENCIA] MPU6050 NO ENCONTRADO. Saltando...");
-    mpu_ok = false;
+  
+  // 3. Chequeo manual del MPU6050 antes de colgar la librería
+  Wire.beginTransmission(0x68); // Dirección típica del MPU6050
+  byte errorI2C = Wire.endTransmission();
+  
+  if (errorI2C == 0) {
+    Serial.println("  -> Dispositivo detectado en 0x68. Inicializando MPU...");
+    if (mpu.begin()) {
+        mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
+        mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+        mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
+        mpu_ok = true;
+        Serial.println("  -> [OK] MPU6050 Configurado.");
+    } else {
+        Serial.println("  -> [ERROR] Fallo al configurar MPU6050.");
+        mpu_ok = false;
+    }
   } else {
-    mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-    mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
-    mpu_ok = true;
-    Serial.println("   -> [Paso 3 OK] MPU6050 Configurado.");
+    Serial.println("  -> [CRÍTICO] No hay respuesta en 0x68. El MPU6050 está desconectado o dañado.");
+    Serial.println("  -> El sistema seguirá funcionando SOLO CON EMG.");
+    mpu_ok = false;
   }
 
   analogReadResolution(12);
 
-  Serial.println("[Paso 4] Configurando red UDP...");
+  // 4. Mensaje SYNC inicial
+  Serial.println("[Paso 3] Enviando mensaje SYNC UDP...");
   struct timeval tv; gettimeofday(&tv, NULL);
   char sync_msg[100];
   snprintf(sync_msg, sizeof(sync_msg), "SYNC,TOBILLO,%lld,%06ld\n", (long long)tv.tv_sec, (long)tv.tv_usec);
   udp_control.beginPacket(ip_broadcast, puerto_control);
   udp_control.print(sync_msg);
   udp_control.endPacket();
-  Serial.println("[Paso 4 OK] Mensaje SYNC enviado.");
 
   payload_len = 0; memset(payload, 0, sizeof(payload));
   ultimo_muestreo_us = micros();
   
-  Serial.println(">>> TOBILLO INICIADO - MONITOR DE RED ACTIVO <<<");
+  Serial.println("\n>>> TOBILLO INICIADO - LOOP ACTIVO <<<");
 }
 
 void loop() {
   unsigned long t_actual = micros();
 
+  // Prevención de desbordamiento (Watchdog timeout)
+  if (t_actual < ultimo_muestreo_us) {
+      ultimo_muestreo_us = t_actual;
+  }
+
   if (t_actual - ultimo_muestreo_us >= INTERVALO_US) {
     ultimo_muestreo_us = t_actual;
 
-    sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
+    float ax = 0, ay = 0, az = 0;
+    
+    // Solo leemos el MPU si fue detectado exitosamente
+    if (mpu_ok) {
+        sensors_event_t a, g, temp;
+        mpu.getEvent(&a, &g, &temp);
+        ax = a.acceleration.x;
+        ay = a.acceleration.y;
+        az = a.acceleration.z;
+    }
 
-    float ax = a.acceleration.x;
-    float ay = a.acceleration.y;
-    float az = a.acceleration.z;
     int emg_raw = analogRead(PIN_EMG);
-
-    if (fabsf(ax) > 50.0f || fabsf(ay) > 50.0f || fabsf(az) > 50.0f) return;
 
     struct timeval tv; gettimeofday(&tv, NULL);
 
@@ -136,11 +160,14 @@ void loop() {
         udp_datos.endPacket();
         
         // --- TELEMETRÍA EN TERMINAL ---
-        Serial.println("\n[TX TOBILLO] Enviando lote UDP:");
-        Serial.print(payload);
+        Serial.println("[TX TOBILLO] Paquete enviado.");
+      } else {
+        Serial.println("[TOBILLO] Esperando conexión de MATLAB o Bíceps...");
       }
       payload_len = 0; contador = 0; 
     }
   }
-  yield(); 
+  
+  // Ceder control al sistema operativo para evitar Watchdog Reset
+  delay(1); 
 }
