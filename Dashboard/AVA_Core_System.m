@@ -413,12 +413,18 @@ function AVA_Core_System()
         bI_Filt = movmean(bI_AC, round(fs/10));
         
         umbral = std(bI_Filt, 'omitnan') * 0.5;
-        [~, locs] = findpeaks(bI_Filt, 'MinPeakHeight', umbral, 'MinPeakDistance', fs*0.35);
         
-        if length(locs) < 2 || length(locs) > 15, return; end
+        % MinPeakDistance a fs*0.25 permite detectar hasta 240 BPM
+        [~, locs] = findpeaks(bI_Filt, 'MinPeakHeight', umbral, 'MinPeakDistance', fs*0.25);
         
+        % Necesitamos al menos 5 picos para una estadística fiable
+        if length(locs) < 5, return; end
+        
+        % Calculamos el ritmo cardíaco
         bpmCalculado = 60 / (mean(diff(locs)) / fs);
-        if bpmCalculado < 40 || bpmCalculado > 200, return; end
+        
+        % Límites fisiológicos reales: Bradicardia severa (30) a Taquicardia extrema (220)
+        if bpmCalculado < 30 || bpmCalculado > 220, return; end
         
         bR_DC = movmean(bR, fs * 2); 
         bR_AC = bR - bR_DC;
@@ -426,6 +432,7 @@ function AVA_Core_System()
         dcI = mean(bI_DC, 'omitnan');
         
         if dcR > 0 && dcI > 0
+            % Cálculo de SpO2 mediante Ratio de Ratios (RMS nativo)
             R = (rms(bR_AC) / dcR) / (rms(bI_AC) / dcI);
             spo2 = max(80, min(100, -45.060 * (R^2) + 30.354 * R + 94.845));
             bpm = bpmCalculado; 
