@@ -58,7 +58,7 @@ function AVA_Core_System()
 
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
     UI = struct();
-    UI.Fig = uifigure('Name', 'AVA Nexus V7.5 | Host-Sync Telemetry (100 Hz)', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
+    UI.Fig = uifigure('Name', 'AVA Nexus', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @cerrarAplicacion;
     UI.AxesAnaLista = [];
 
@@ -294,7 +294,7 @@ function AVA_Core_System()
             [anotFinal, ~, ~] = procesarAASM(t_d, emgEnv_d, svmAc_d, spo2_d, Config.Muestreo.Fs_Hz, Config);
             
             fid = fopen(nameCSV, 'w');
-            fprintf(fid, '# AVA Nexus V7.5 Data Lake (Hardware Timestamps)\n# Exportado: %s\n# Fs_Hz: %d\n# Thr_EMG: %.4f\n# Thr_SVM: %.4f\n', char(datetime('now')), Config.Muestreo.Fs_Hz, Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento);
+            fprintf(fid, '# AVA Nexus Data Lake (Hardware Timestamps)\n# Exportado: %s\n# Fs_Hz: %d\n# Thr_EMG: %.4f\n# Thr_SVM: %.4f\n', char(datetime('now')), Config.Muestreo.Fs_Hz, Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento);
             fprintf(fid, 'Time_s_Abs,Ax,Ay,Az,EMG_Raw,Red_Raw,IR_Raw,EMG_Env,SVM_ac,SpO2_pct,BPM_bpm,AASM_SPI\n');
             for i = 1:length(t_d)
                 fprintf(fid, '%.6f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.6f,%.6f,%.0f,%.0f,%d\n', t_d(i), ax_d(i), ay_d(i), az_d(i), emgRaw_d(i), red_d(i), ir_d(i), emgEnv_d(i), svmAc_d(i), spo2_d(i), bpm_d(i), anotFinal(i));
