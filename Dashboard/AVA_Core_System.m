@@ -20,7 +20,6 @@ function AVA_Core_System()
     Config = struct();
     Config.Puertos.Tobillo = 8888; 
     Config.Puertos.Biceps  = 8889; 
-    Config.Puertos.Control = 9999; 
     
     Config.Muestreo.Fs_Hz  = 100; 
     Config.Muestreo.VentanaGrafica_s = 60; 
@@ -52,18 +51,20 @@ function AVA_Core_System()
     RingBuffer.IR_Raw  = zeros(1, Config.BufferMax.Muestras);
     RingBuffer.EMG_Env = zeros(1, Config.BufferMax.Muestras);   
     RingBuffer.SVM_Ac  = zeros(1, Config.BufferMax.Muestras);  
-    RingBuffer.SPO2    = zeros(1, Config.BufferMax.Muestras);    
-    RingBuffer.BPM     = zeros(1, Config.BufferMax.Muestras);     
+    RingBuffer.SPO2    = zeros(1, Config.BufferMax.Muestras);   
+    RingBuffer.BPM     = zeros(1, Config.BufferMax.Muestras);      
     RingBuffer.Anot    = logical(zeros(1, Config.BufferMax.Muestras));  
     RingBuffer.Idx     = 1;      
-    RingBuffer.Count   = 0;    
+    RingBuffer.Count   = 0;  
     RingBuffer.Full    = false; 
     
     Estado = struct();
     Estado.Capturando = false;
-    Estado.OffsetTobillo = NaN;
-    Estado.OffsetBiceps = NaN;
-    Estado.T0_Global = -1; 
+    
+    % --- TIEMPO LOCAL DE LA PC ---
+    Estado.TiempoTobillo = 0.0;
+    Estado.TiempoBiceps = 0.0;
+    
     Estado.DedoDetectado = false; 
     Estado.UltimoBackupIdx = 1;
     
@@ -95,13 +96,13 @@ function AVA_Core_System()
     
     Analisis = struct('T', [], 'Anotaciones', [], 'EventosPLM', [], 'IdxNav', 0, 'TotPLM', 0, 'TotEpisodios', 0);
     Archivos = struct('Senales', "", 'Anotaciones', "");
-    Red = struct('UdpTobillo', [], 'UdpBiceps', [], 'UdpControl', []);
+    Red = struct('UdpTobillo', [], 'UdpBiceps', []);
     
     limpiezaCierre = onCleanup(@() liberarRecursos(Red));
     
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
     UI = struct();
-    UI.Fig = uifigure('Name', 'AVA Nexus V7.4 | Telemetry & Clinical Ready', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
+    UI.Fig = uifigure('Name', 'AVA Nexus', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @(src, event) cerrarAplicacion(src, event);
     UI.AxesAnaLista = [];
     
@@ -109,7 +110,7 @@ function AVA_Core_System()
     UI.PnlAdq  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     UI.PnlAna  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     
-    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V7.4', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
+    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
     uibutton(UI.PnlMenu, 'Text', '1. Adquisición de Datos (UDP)', 'FontSize', 18, 'Position', [400, 450, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAdq));
     uibutton(UI.PnlMenu, 'Text', '2. Analizador Clínico (SPI)', 'FontSize', 18, 'Position', [400, 350, 400, 60], 'ButtonPushedFcn', @(src, event) cambiarPanel(UI.PnlAna));
     
@@ -164,70 +165,47 @@ function AVA_Core_System()
         try
             if Estado.Capturando 
                 
-                if isvalid(Red.UdpControl) && Red.UdpControl.NumDatagramsAvailable > 0
-                    paquetesSync = read(Red.UdpControl, Red.UdpControl.NumDatagramsAvailable);
-                    for ps = 1:length(paquetesSync)
-                        txt = char(paquetesSync(ps).Data);
-                        fprintf('--- [CTRL] MSG RECIBIDO: %s\n', strtrim(txt));
-                        partes = strsplit(strtrim(txt), ',');
-                        if length(partes) >= 4 && strcmp(partes{1}, 'SYNC')
-                            devTime = str2double(partes{3}) + (str2double(partes{4}) / 1e6);
-                            localTime = posixtime(datetime('now'));
-                            if strcmp(partes{2}, 'TOBILLO') && isnan(Estado.OffsetTobillo)
-                                Estado.OffsetTobillo = localTime - devTime;
-                            elseif strcmp(partes{2}, 'BICEPS') && isnan(Estado.OffsetBiceps)
-                                Estado.OffsetBiceps = localTime - devTime;
-                            end
-                        end
-                    end
-                end
-
-                lineasB = leerYValidarBatch(Red.UdpBiceps, 5, true); 
-                lineasT = leerYValidarBatch(Red.UdpTobillo, 7, true); 
+                % Lectura de paquetes (Ignorando las marcas de tiempo del ESP32 internamente)
+                lineasB = leerYValidarBatch(Red.UdpBiceps, 5); 
+                lineasT = leerYValidarBatch(Red.UdpTobillo, 7); 
                 
+                % --- PROCESAMIENTO DEL BÍCEPS (SPO2/BPM) ---
                 if ~isempty(lineasB)
-                    if isnan(Estado.OffsetBiceps), Estado.OffsetBiceps = posixtime(datetime('now')) - lineasB(1,1); end
-                    lineasB(:,1) = lineasB(:,1) + Estado.OffsetBiceps;
-                end
-                
-                if ~isempty(lineasT)
-                    if isnan(Estado.OffsetTobillo), Estado.OffsetTobillo = posixtime(datetime('now')) - lineasT(1,1); end
-                    lineasT(:,1) = lineasT(:,1) + Estado.OffsetTobillo;
-                end
-                
-                if Estado.T0_Global == -1
-                    t0s = [];
-                    if ~isempty(lineasB), t0s = [t0s, lineasB(1,1)]; end
-                    if ~isempty(lineasT), t0s = [t0s, lineasT(1,1)]; end
-                    if ~isempty(t0s), Estado.T0_Global = min(t0s); end
-                end
-
-                if ~isempty(lineasB) && Estado.T0_Global ~= -1
                     for i = 1:size(lineasB, 1)
                         datosB = lineasB(i,:);
-                        Estado.Vitales.UltimoRed = datosB(2);
-                        Estado.Vitales.UltimoIR  = datosB(3);
-                        Estado.Vitales.BufferRed = [Estado.Vitales.BufferRed(2:end), datosB(2)]; 
-                        Estado.Vitales.BufferIR  = [Estado.Vitales.BufferIR(2:end), datosB(3)];
-                        Estado.DedoDetectado = (datosB(3) > Config.Umbrales.IR_Minimo_Dedo);
+                        % datosB = [Sec, uSec, Red_Raw, IR_Raw, CRC] (Parseado parcial)
+                        
+                        red_raw = datosB(3);
+                        ir_raw = datosB(4);
+                        
+                        Estado.Vitales.UltimoRed = red_raw;
+                        Estado.Vitales.UltimoIR  = ir_raw;
+                        Estado.Vitales.BufferRed = [Estado.Vitales.BufferRed(2:end), red_raw]; 
+                        Estado.Vitales.BufferIR  = [Estado.Vitales.BufferIR(2:end), ir_raw];
+                        Estado.DedoDetectado = (ir_raw > Config.Umbrales.IR_Minimo_Dedo);
+                        
+                        % Avanzamos el reloj interno del Biceps a 100Hz
+                        Estado.TiempoBiceps = Estado.TiempoBiceps + (1.0 / Config.Muestreo.Fs_Hz);
                     end
                 end
 
-                if ~isempty(lineasT) && Estado.T0_Global ~= -1
+                % --- PROCESAMIENTO DEL TOBILLO (EMG/SVM) ---
+                if ~isempty(lineasT)
                     for i = 1:size(lineasT, 1)
                         datosT = lineasT(i,:);
                         
-                        tRelativo = datosT(1) - Estado.T0_Global;
-                        if tRelativo < 0, continue; end 
+                        % Tiempo generado localmente, fluido y perfecto
+                        tRelativo = Estado.TiempoTobillo;
+                        Estado.TiempoTobillo = Estado.TiempoTobillo + (1.0 / Config.Muestreo.Fs_Hz);
                         
-                        ax = datosT(2); ay = datosT(3); az = datosT(4);
-                        emg_crudo = datosT(5);
+                        ax = datosT(3); ay = datosT(4); az = datosT(5);
+                        emg_crudo = datosT(6);
                         
                         Estado.DSP.EMG_Baseline = (1 - Config.Filtros.Alpha_EMG_HP) * Estado.DSP.EMG_Baseline + (Config.Filtros.Alpha_EMG_HP * emg_crudo);
                         emg_ac = abs(emg_crudo - Estado.DSP.EMG_Baseline); 
                         Estado.DSP.EMG_Envelope = (1 - Config.Filtros.Alpha_EMG_LP) * Estado.DSP.EMG_Envelope + (Config.Filtros.Alpha_EMG_LP * emg_ac);
                         
-                        svm_crudo = sqrt(sum(datosT(2:4).^2));
+                        svm_crudo = sqrt(sum([ax, ay, az].^2));
                         Estado.DSP.SVM_Baseline = (1 - Config.Filtros.Alpha_SVM) * Estado.DSP.SVM_Baseline + (Config.Filtros.Alpha_SVM * svm_crudo);
                         svm_ac = abs(svm_crudo - Estado.DSP.SVM_Baseline);
                         
@@ -301,7 +279,7 @@ function AVA_Core_System()
                                 Estado.Vitales.BPM = 0;
                             else
                                 if Estado.DedoDetectado
-                                    if ~is_artifact && tempSPO2 > 0
+                                    if ~is_artifact && tempSPO2 > 0 && tempBPM > 0
                                         Estado.Vitales.SPO2 = tempSPO2;
                                         Estado.Vitales.BPM = tempBPM;
                                         nuevoSPO2 = sprintf('%d%% SpO2', round(Estado.Vitales.SPO2));
@@ -336,7 +314,7 @@ function AVA_Core_System()
                             Estado.UI.MuestrasDesdeUltimoBackup = 0;
                         end
                         
-                        guardarEnRingBuffer(datosT(1), ax, ay, az, emg_crudo, Estado.Vitales.UltimoRed, Estado.Vitales.UltimoIR, ...
+                        guardarEnRingBuffer(tRelativo, ax, ay, az, emg_crudo, Estado.Vitales.UltimoRed, Estado.Vitales.UltimoIR, ...
                                             Estado.DSP.EMG_Envelope, svm_ac, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
                         Estado.UI.MuestrasRecibidas = Estado.UI.MuestrasRecibidas + 1;
                     end
@@ -354,9 +332,9 @@ function AVA_Core_System()
     function alternarCaptura()
         Estado.Capturando = ~Estado.Capturando;
         if Estado.Capturando
-            Estado.OffsetTobillo = NaN;
-            Estado.OffsetBiceps = NaN;
-            Estado.T0_Global = -1;
+            % REINICIO DE RELOJES MAESTROS PC-SIDE
+            Estado.TiempoTobillo = 0.0;
+            Estado.TiempoBiceps = 0.0;
             
             Estado.Calibracion.Activa = true;
             Estado.Calibracion.Cuenta = 0;
@@ -368,14 +346,6 @@ function AVA_Core_System()
             Estado.UI.ContraccionPrevia = false; Estado.UI.MuestrasRecibidas = 0;
             Estado.UI.MuestrasDesdeUltimoBackup = 0;
             Analisis.T = []; Analisis.Anotaciones = []; Analisis.EventosPLM = []; Analisis.IdxNav = 0;
-            
-            try
-                Red.UdpControl = udpport("datagram", "LocalPort", Config.Puertos.Control);
-                Red.UdpControl.Timeout = 0.1;
-                fprintf('\n*** ESCUCHA UDP INICIADA (PUERTO 9999 SYNC) ***\n');
-            catch ME
-                logSistema('WARN', ['No se pudo abrir puerto 9999: ', ME.message]);
-            end
 
             try 
                 Red.UdpTobillo = udpport("datagram", "LocalPort", Config.Puertos.Tobillo);
@@ -389,7 +359,7 @@ function AVA_Core_System()
                 Red.UdpBiceps  = udpport("datagram", "LocalPort", Config.Puertos.Biceps);
                 Red.UdpBiceps.Timeout = 0.5;
             catch ME
-                clear Red.UdpTobillo; clear Red.UdpControl;
+                clear Red.UdpTobillo; 
                 uialert(UI.Fig, ['Error Bíceps: ', ME.message], 'Error UDP'); 
                 Estado.Capturando = false; return;
             end
@@ -425,12 +395,12 @@ function AVA_Core_System()
             [anotFinal, epi, validosPLM] = procesarAASM(t_d, emgEnv_d, svmAc_d, spo2_d, Config.Muestreo.Fs_Hz, Config);
             
             fid = fopen(nameCSV, 'w');
-            fprintf(fid, '# AVA Nexus V7.4 Data Lake (Telemetry Edition)\n');
+            fprintf(fid, '# AVA Nexus V7.5 Data Lake (Host-Timed Edition)\n');
             fprintf(fid, '# Exportado: %s\n', char(datetime('now')));
             fprintf(fid, '# Fs_Hz: %d\n', Config.Muestreo.Fs_Hz);
             fprintf(fid, '# Thr_EMG: %.4f\n', Config.Umbrales.EMG_Contraccion);
             fprintf(fid, '# Thr_SVM: %.4f\n', Config.Umbrales.SVM_Movimiento);
-            fprintf(fid, 'Time_s_UTC,Ax,Ay,Az,EMG_Raw,Red_Raw,IR_Raw,EMG_Env,SVM_ac,SpO2_pct,BPM_bpm,AASM_SPI\n');
+            fprintf(fid, 'Time_s_Local,Ax,Ay,Az,EMG_Raw,Red_Raw,IR_Raw,EMG_Env,SVM_ac,SpO2_pct,BPM_bpm,AASM_SPI\n');
             
             for i = 1:length(t_d)
                 fprintf(fid, '%.6f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.6f,%.6f,%d,%d,%d\n', ...
@@ -439,7 +409,7 @@ function AVA_Core_System()
             fclose(fid);
             
             fidTxt = fopen(nameTXT, 'w');
-            fprintf(fidTxt, 'Tiempo_s_UTC,Anot_SPI\n');
+            fprintf(fidTxt, 'Tiempo_s_Local,Anot_SPI\n');
             for i = 1:length(t_d), fprintf(fidTxt, '%.6f,%d\n', t_d(i), anotFinal(i)); end
             fclose(fidTxt);
             uialert(UI.Fig, sprintf('Exportado Correctamente:\n%d muestras', length(t_d)), 'Éxito');
@@ -523,23 +493,16 @@ function AVA_Core_System()
     
     %% --- 6. FUNCIONES SECUNDARIAS (INCLUYE TELEMETRÍA) ---
     
-   function dataOut = leerYValidarBatch(puerto, expectedCols, fusionarTiempo)
+   function dataOut = leerYValidarBatch(puerto, expectedCols)
         dataOut = [];
         if isempty(puerto) || ~isvalid(puerto) || puerto.NumDatagramsAvailable == 0, return; end
         try
-            origen = 'BICEPS'; if puerto.LocalPort == 8888, origen = 'TOBILLO'; end
             paquetes = read(puerto, min(puerto.NumDatagramsAvailable, 50)); 
-            
-            % Telemetría
-            fprintf('<<< RECIBIDO DE %s: %d datagramas [Port %d]\n', origen, length(paquetes), puerto.LocalPort);
         catch, return; end
         
         columnasFinales = expectedCols - 1; % Restamos 1 porque quitamos el CRC
-        if fusionarTiempo
-            columnasFinales = columnasFinales - 1; % Restamos 1 más porque Sec y uSec se vuelven una sola columna
-        end
         
-        % Prealocación de memoria con el tamaño matemáticamente perfecto
+        % Prealocación de memoria
         matrizTemporal = NaN(length(paquetes) * 10, columnasFinales);
         indiceValido = 0;
         
@@ -552,21 +515,13 @@ function AVA_Core_System()
                 partes = strsplit(strLine, ',');
                 if length(partes) ~= expectedCols, continue; end
                 if ~strcmp(m_crc16(strjoin(partes(1:end-1), ',')), partes{end}), continue; end
-                
-                if mod(indiceValido, 5) == 0 
-                    fprintf('    Validado: %s\n', strLine);
-                end
 
                 nums = str2double(partes(1:end-1));
                 if any(isnan(nums)), continue; end
                 
-                if fusionarTiempo && length(nums) >= 2
-                    nums = [nums(1) + (nums(2) / 1e6), nums(3:end)];
-                end
-                
                 indiceValido = indiceValido + 1;
                 if indiceValido <= size(matrizTemporal, 1)
-                    matrizTemporal(indiceValido, :) = nums; % ¡Ahora 1x3 entra perfectamente en 1x3!
+                    matrizTemporal(indiceValido, :) = nums;
                 else
                     matrizTemporal = [matrizTemporal; nums]; %#ok<AGROW> 
                 end
@@ -637,47 +592,51 @@ function AVA_Core_System()
     end
 
     function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
-        spo2 = 95; bpm = 70; is_artifact = false;
-        if length(bR) < fs * 5 || length(bI) < fs * 5, return; end
+        spo2 = 0; bpm = 0; is_artifact = true;
         
-        bI_HP = bI - movmean(bI, fs);
-        bI_Filt = movmean(bI_HP, round(fs/10));
+        % Se requieren al menos 3 segundos de datos para estabilizar
+        if length(bR) < fs * 3 || length(bI) < fs * 3, return; end
         
-        p2p_actual = max(bI_Filt) - min(bI_Filt);
-        if p2p_actual > (4 * std(bI_Filt)) 
+        % Filtro Pasa-Banda rústico para aislar el latido del corazón
+        bI_DC = movmean(bI, fs * 2); 
+        bI_AC = bI - bI_DC;
+        bI_Filt = movmean(bI_AC, round(fs/10)); % Suavizado de alta frecuencia
+
+        % Detección matemática de picos de pulso
+        umbral = std(bI_Filt);
+        [pks, locs] = findpeaks(bI_Filt, 'MinPeakHeight', umbral, 'MinPeakDistance', fs*0.3);
+        
+        if length(locs) < 2 || length(locs) > 10
             is_artifact = true;
             return;
         end
         
-        bI_norm = bI_Filt / (std(bI_Filt) + eps);
-        umbral = 0.5 * std(bI_norm);
-        picos = [];
+        % Calcular BPM
+        intProm = mean(diff(locs)) / fs;
+        bpmCalculado = 60 / intProm;
         
-        for idx = 2:(length(bI_norm)-1)
-            if bI_norm(idx) > bI_norm(idx-1) && bI_norm(idx) > bI_norm(idx+1) && bI_norm(idx) > umbral
-                picos = [picos, idx];
-            end
+        if bpmCalculado < 40 || bpmCalculado > 200
+             is_artifact = true;
+             return;
         end
         
-        if length(picos) > 3
-            intProm = mean(diff(picos)) / fs;
-            if intProm > 0
-                bpmCalc = 60 / intProm;
-                if bpmCalc >= 40 && bpmCalc <= 200, bpm = bpmCalc; end
-            end
-        end
+        bpm = bpmCalculado;
         
-        bR_HP = bR - movmean(bR, fs);
-        acR = std(movmean(bR_HP, round(fs/10)));
-        dcR = mean(movmean(bR, fs));
+        % Calcular SPO2 via 'Ratio of Ratios'
+        bR_DC = movmean(bR, fs * 2);
+        bR_AC = bR - bR_DC;
         
-        acI = std(bI_Filt);
-        dcI = mean(movmean(bI, fs));
+        acR_RMS = rms(bR_AC); 
+        acI_RMS = rms(bI_AC);
+        dcR_mean = mean(bR_DC);
+        dcI_mean = mean(bI_DC);
         
-        if dcR > 0 && dcI > 0
-            R = (acR / (dcR + eps)) / (acI / (dcI + eps));
+        if dcR_mean > 0 && dcI_mean > 0
+            R = (acR_RMS / dcR_mean) / (acI_RMS / dcI_mean);
             spo2_calc = -45.060 * (R^2) + 30.354 * R + 94.845;
-            spo2 = max(0, min(100, spo2_calc));
+            
+            spo2 = max(80, min(100, spo2_calc));
+            is_artifact = false;
         end
     end
     
@@ -783,7 +742,6 @@ function AVA_Core_System()
     end
 
     function liberarRecursos(R)
-        if isfield(R, 'UdpControl') && ~isempty(R.UdpControl) && isvalid(R.UdpControl), clear R.UdpControl; end
         if isfield(R, 'UdpTobillo') && ~isempty(R.UdpTobillo) && isvalid(R.UdpTobillo), clear R.UdpTobillo; end
         if isfield(R, 'UdpBiceps') && ~isempty(R.UdpBiceps) && isvalid(R.UdpBiceps), clear R.UdpBiceps; end
     end
