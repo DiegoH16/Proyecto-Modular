@@ -15,15 +15,15 @@
 function AVA_Core_System()
     clearvars; clc; close all force;
     
-    %% --- 1. CONFIGURACIÓN CLÍNICA ESTRICTA ---
+    %% --- 1. CONFIGURACIÓN CLÍNICA ESTRICTA (400 Hz) ---
     Config = struct(...
         'Puertos', struct('Tobillo', 8888, 'Biceps', 8889), ...
-        'Muestreo', struct('Fs_Hz', 100, 'VentanaGrafica_s', 60), ...
-        'BufferMax', struct('Horas', 10, 'Muestras', 100 * 3600 * 10), ...
-        'UI', struct('RefrescoGraficas_Muestras', 10, 'RefrescoVitales_Muestras', 25), ...
-        'Backup', struct('MuestrasIntervalo', 100 * 300), ... 
+        'Muestreo', struct('Fs_Hz', 400, 'VentanaGrafica_s', 60), ...
+        'BufferMax', struct('Horas', 10, 'Muestras', 400 * 3600 * 10), ...
+        'UI', struct('RefrescoGraficas_Muestras', 40, 'RefrescoVitales_Muestras', 100), ... % Gráficas a 10 fps, UI a 4 fps
+        'Backup', struct('MuestrasIntervalo', 400 * 300), ... % 5 minutos
         'Umbrales', struct('IR_Minimo_Dedo', 3000, 'EMG_Contraccion', 50, 'SVM_Movimiento', 0.4), ...
-        'Filtros', struct('Alpha_SVM', 0.005, 'Alpha_EMG_HP', 0.05, 'Alpha_EMG_LP', 0.1) ...
+        'Filtros', struct('Alpha_SVM', 0.00125, 'Alpha_EMG_HP', 0.0125, 'Alpha_EMG_LP', 0.025) ... % Alphas adaptados a 400Hz
     );
 
     %% --- 2. ESTADO GLOBAL Y RING BUFFER EXPANDIDO ---
@@ -43,7 +43,7 @@ function AVA_Core_System()
                               'EMG_Data', zeros(1, numCalibracion), 'SVM_Data', zeros(1, numCalibracion)), ...
         'DSP', struct('EMG_Baseline', 0, 'EMG_Envelope', 0, 'SVM_Baseline', 1.0), ...
         'Vitales', struct('UltimoRed', 0, 'UltimoIR', 0, 'SPO2', NaN, 'BPM', NaN, ...
-                          'SPO2_UI', NaN, 'BPM_UI', NaN, ... % Variables de visualización (EMA)
+                          'SPO2_UI', NaN, 'BPM_UI', NaN, ... 
                           'BufferRed', zeros(1, Config.Muestreo.Fs_Hz * 30), ...
                           'BufferIR', zeros(1, Config.Muestreo.Fs_Hz * 30)), ...
         'UI', struct('ContraccionPrevia', false, 'MuestrasRecibidas', 0, ...
@@ -58,7 +58,7 @@ function AVA_Core_System()
 
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
     UI = struct();
-    UI.Fig = uifigure('Name', 'AVA Nexus V7.5 | Host-Sync Telemetry', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
+    UI.Fig = uifigure('Name', 'AVA Nexus V7.5 | Host-Sync Telemetry (400 Hz)', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @cerrarAplicacion;
     UI.AxesAnaLista = [];
 
@@ -75,7 +75,7 @@ function AVA_Core_System()
     UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Envolvente (AD8232 + DSP)'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 3];
     UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM (DSP)'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 3];
 
-    numPuntosGrafica = 6000; 
+    numPuntosGrafica = 24000; % Aumentado para 60 segundos a 400Hz
     UI.lineaEMG = animatedline(UI.axEMG_TR, 'Color', [1 0.5 0], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     UI.lineaSVM = animatedline(UI.axSVM_TR, 'Color', [0 0.4 1], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
 
@@ -116,7 +116,7 @@ function AVA_Core_System()
     uibutton(gToolbar, 'Text', 'Volver', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
     UI.pnlGraficasAna = uipanel(gAna, 'BorderType', 'none', 'BackgroundColor', 'w');
 
-    %% --- 4. BUCLE PRINCIPAL (CRC + TIMESTAMPS HARDWARE) ---
+    %% --- 4. BUCLE PRINCIPAL ---
     while ishandle(UI.Fig)
         if Estado.Capturando 
             try
@@ -197,7 +197,6 @@ function AVA_Core_System()
                         actualizarEjesGrafica([UI.axEMG_TR, UI.axSVM_TR], tRelativo, Config.Muestreo.VentanaGrafica_s);
                     end
                     
-                    % Refresco dinámico y suave de vitales
                     if mod(Estado.UI.MuestrasRecibidas, Config.UI.RefrescoVitales_Muestras) == 0 
                         [tempSPO2, tempBPM, is_artifact] = detectarBPMRobusto(Estado.Vitales.BufferRed, Estado.Vitales.BufferIR, Config.Muestreo.Fs_Hz); 
                         if Estado.Calibracion.Activa
@@ -206,7 +205,6 @@ function AVA_Core_System()
                             if ~is_artifact && ~isnan(tempSPO2) && ~isnan(tempBPM)
                                 Estado.Vitales.SPO2 = tempSPO2; Estado.Vitales.BPM = tempBPM;
                                 
-                                % Filtro de media móvil exponencial para UI (evita parpadeos nerviosos)
                                 if isnan(Estado.Vitales.SPO2_UI)
                                     Estado.Vitales.SPO2_UI = tempSPO2;
                                     Estado.Vitales.BPM_UI = tempBPM;
@@ -357,7 +355,6 @@ function AVA_Core_System()
     end
 
     %% --- 6. PARSEO, CRC Y NATIVAS ---
-    
     function dataOut = leerYValidarBatch(puerto, expectedCols)
         dataOut = [];
         if isempty(puerto) || ~isvalid(puerto) || puerto.NumDatagramsAvailable == 0, return; end
@@ -481,7 +478,6 @@ function AVA_Core_System()
     end
 
     %% --- 7. UTILIDADES DE MEMORIA Y ESTADO ---
-    
     function guardarEnRingBuffer(t, ax, ay, az, emgRaw, redRaw, irRaw, emgEnv, svm, spo2, bpm, anot, cfg)
         idx = RingBuffer.Idx;
         RingBuffer.T(idx) = t; RingBuffer.Ax(idx) = ax; RingBuffer.Ay(idx) = ay; RingBuffer.Az(idx) = az;
