@@ -20,7 +20,7 @@ function AVA_Core_System()
         'Puertos', struct('Tobillo', 8888, 'Biceps', 8889), ...
         'Muestreo', struct('Fs_Hz', 100, 'VentanaGrafica_s', 60), ...
         'BufferMax', struct('Horas', 10, 'Muestras', 100 * 3600 * 10), ...
-        'UI', struct('RefrescoGraficas_Muestras', 10), ...
+        'UI', struct('RefrescoGraficas_Muestras', 10, 'RefrescoVitales_Muestras', 25), ...
         'Backup', struct('MuestrasIntervalo', 100 * 300), ... 
         'Umbrales', struct('IR_Minimo_Dedo', 3000, 'EMG_Contraccion', 50, 'SVM_Movimiento', 0.4), ...
         'Filtros', struct('Alpha_SVM', 0.005, 'Alpha_EMG_HP', 0.05, 'Alpha_EMG_LP', 0.1) ...
@@ -43,6 +43,7 @@ function AVA_Core_System()
                               'EMG_Data', zeros(1, numCalibracion), 'SVM_Data', zeros(1, numCalibracion)), ...
         'DSP', struct('EMG_Baseline', 0, 'EMG_Envelope', 0, 'SVM_Baseline', 1.0), ...
         'Vitales', struct('UltimoRed', 0, 'UltimoIR', 0, 'SPO2', NaN, 'BPM', NaN, ...
+                          'SPO2_UI', NaN, 'BPM_UI', NaN, ... % Variables de visualización (EMA)
                           'BufferRed', zeros(1, Config.Muestreo.Fs_Hz * 30), ...
                           'BufferIR', zeros(1, Config.Muestreo.Fs_Hz * 30)), ...
         'UI', struct('ContraccionPrevia', false, 'MuestrasRecibidas', 0, ...
@@ -119,7 +120,6 @@ function AVA_Core_System()
     while ishandle(UI.Fig)
         if Estado.Capturando 
             try
-                % Columnas esperadas incluyendo el CRC al final
                 lineasB = leerYValidarBatch(Red.UdpBiceps, 5); 
                 lineasT = leerYValidarBatch(Red.UdpTobillo, 7); 
                 
@@ -136,7 +136,6 @@ function AVA_Core_System()
                 % --- PROCESAMIENTO DEL TOBILLO (RELOJ MAESTRO) ---
                 for i = 1:size(lineasT, 1)
                     t_abs = lineasT(i, 1) + lineasT(i, 2) / 1e6;
-                    % Sincronización a cero y manejo de reinicios del ESP32
                     if isnan(Estado.t0_Tobillo) || t_abs < Estado.t0_Tobillo
                         Estado.t0_Tobillo = t_abs; 
                     end
@@ -198,22 +197,36 @@ function AVA_Core_System()
                         actualizarEjesGrafica([UI.axEMG_TR, UI.axSVM_TR], tRelativo, Config.Muestreo.VentanaGrafica_s);
                     end
                     
-                    if mod(Estado.UI.MuestrasRecibidas, 100) == 0 
+                    % Refresco dinámico y suave de vitales
+                    if mod(Estado.UI.MuestrasRecibidas, Config.UI.RefrescoVitales_Muestras) == 0 
                         [tempSPO2, tempBPM, is_artifact] = detectarBPMRobusto(Estado.Vitales.BufferRed, Estado.Vitales.BufferIR, Config.Muestreo.Fs_Hz); 
                         if Estado.Calibracion.Activa
                             nuevoSPO2 = '--% (Calibrando)'; nuevoBPM = '-- (Calibrando)'; UI.lblSPO2.FontColor = [0.5 0.5 0.5]; 
                         elseif Estado.DedoDetectado
                             if ~is_artifact && ~isnan(tempSPO2) && ~isnan(tempBPM)
                                 Estado.Vitales.SPO2 = tempSPO2; Estado.Vitales.BPM = tempBPM;
-                                nuevoSPO2 = sprintf('%.0f%% SpO2', tempSPO2); nuevoBPM = sprintf('%.0f BPM', tempBPM);
+                                
+                                % Filtro de media móvil exponencial para UI (evita parpadeos nerviosos)
+                                if isnan(Estado.Vitales.SPO2_UI)
+                                    Estado.Vitales.SPO2_UI = tempSPO2;
+                                    Estado.Vitales.BPM_UI = tempBPM;
+                                else
+                                    Estado.Vitales.SPO2_UI = 0.8 * Estado.Vitales.SPO2_UI + 0.2 * tempSPO2;
+                                    Estado.Vitales.BPM_UI  = 0.8 * Estado.Vitales.BPM_UI  + 0.2 * tempBPM;
+                                end
+                                
+                                nuevoSPO2 = sprintf('%.0f%% SpO2', Estado.Vitales.SPO2_UI); 
+                                nuevoBPM = sprintf('%.0f BPM', Estado.Vitales.BPM_UI);
                                 UI.lblSPO2.FontColor = [0 0.4 0.8]; 
                             else
-                                nuevoSPO2 = sprintf('%.0f%% (RUIDO)', Estado.Vitales.SPO2); nuevoBPM = sprintf('%.0f (RUIDO)', Estado.Vitales.BPM);
+                                nuevoSPO2 = sprintf('%.0f%% (RUIDO)', Estado.Vitales.SPO2_UI); 
+                                nuevoBPM = sprintf('%.0f (RUIDO)', Estado.Vitales.BPM_UI);
                                 UI.lblSPO2.FontColor = [0.8 0.4 0]; 
                             end
                         else
                             nuevoSPO2 = 'SIN DEDO'; nuevoBPM = '--- BPM'; UI.lblSPO2.FontColor = [0.8 0.2 0.2]; 
                             Estado.Vitales.SPO2 = NaN; Estado.Vitales.BPM = NaN;
+                            Estado.Vitales.SPO2_UI = NaN; Estado.Vitales.BPM_UI = NaN;
                         end
                         
                         if ~strcmp(Estado.UI.SPO2Text, nuevoSPO2), UI.lblSPO2.Text = nuevoSPO2; Estado.UI.SPO2Text = nuevoSPO2; end
@@ -288,7 +301,6 @@ function AVA_Core_System()
             fprintf(fid, '# AVA Nexus V7.5 Data Lake (Hardware Timestamps)\n# Exportado: %s\n# Fs_Hz: %d\n# Thr_EMG: %.4f\n# Thr_SVM: %.4f\n', char(datetime('now')), Config.Muestreo.Fs_Hz, Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento);
             fprintf(fid, 'Time_s_Abs,Ax,Ay,Az,EMG_Raw,Red_Raw,IR_Raw,EMG_Env,SVM_ac,SpO2_pct,BPM_bpm,AASM_SPI\n');
             for i = 1:length(t_d)
-                % Al usar %.0f los NaNs se registran correctamente en texto como 'NaN'
                 fprintf(fid, '%.6f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.6f,%.6f,%.0f,%.0f,%d\n', t_d(i), ax_d(i), ay_d(i), az_d(i), emgRaw_d(i), red_d(i), ir_d(i), emgEnv_d(i), svmAc_d(i), spo2_d(i), bpm_d(i), anotFinal(i));
             end
             fclose(fid);
@@ -361,10 +373,9 @@ function AVA_Core_System()
                 str = strtrim(lineas(j));
                 if strlength(str) < 5 || startsWith(str, '#'), continue; end
                 
-                % Validación CRC de seguridad (Corrección aplicada aquí)
                 idx_commas = strfind(str, ',');
                 if isempty(idx_commas), continue; end
-                idx_comma = idx_commas(end); % Busca de forma nativa la última coma
+                idx_comma = idx_commas(end);
                 
                 data_str = extractBefore(str, idx_comma);
                 crc_str = extractAfter(str, idx_comma);
@@ -400,14 +411,12 @@ function AVA_Core_System()
     function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
         spo2 = NaN; bpm = NaN; is_artifact = true;
         
-        % Se requieren al menos 3 segundos de datos para estabilizar
         if length(bR) < fs * 3 || length(bI) < fs * 3, return; end
         
         bI_DC = movmean(bI, fs * 2); 
         bI_AC = bI - bI_DC; 
         bI_Filt = movmean(bI_AC, round(fs/10));
         
-        % Detección de picos robusta con Signal Processing Toolbox
         umbral = std(bI_Filt, 'omitnan') * 0.5;
         [~, locs] = findpeaks(bI_Filt, 'MinPeakHeight', umbral, 'MinPeakDistance', fs*0.35);
         
@@ -432,7 +441,6 @@ function AVA_Core_System()
     function [anotFinal, mEpi, validosPLM] = procesarAASM(t, e, s, spo2_data, fs, cfg)
         fus = (e > cfg.Umbrales.EMG_Contraccion) & (s > cfg.Umbrales.SVM_Movimiento);
         
-        % Soporta NaNs en la detección
         spo2_base = movmean(spo2_data, fs * 120, 'omitnan');
         exclusionRespiratoria = movmax(double((spo2_base - spo2_data) >= 3), round(fs * 10) * 2) > 0;
         
