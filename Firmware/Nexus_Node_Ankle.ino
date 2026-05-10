@@ -34,16 +34,16 @@ WiFiUDP udp_datos, udp_control;
 Adafruit_MPU6050 mpu;
 
 const int PIN_EMG = 34; 
-const int FRECUENCIA_HZ = 100;
-const unsigned long INTERVALO_US = 1000000 / FRECUENCIA_HZ;
+const int FRECUENCIA_HZ = 400; // Escalado a 400 Hz
+const unsigned long INTERVALO_US = 1000000 / FRECUENCIA_HZ; // 2500 us
 
-const int TAMANO_LOTE = 5; 
+// 4 muestras a 400Hz = 1 paquete cada 10ms (100 paquetes/seg)
+const int TAMANO_LOTE = 4; 
 int contador = 0;
-char payload[512]; 
+char payload[1024]; // Buffer ampliado
 int payload_len = 0;
 unsigned long ultimo_muestreo_us = 0;
 
-// ✅ CORRECCIÓN: Declaración de la bandera de estado del MPU
 bool mpu_ok = false;
 
 uint16_t crc16(const char* data, int len) {
@@ -60,25 +60,23 @@ uint16_t crc16(const char* data, int len) {
 
 void setup() {
   Serial.begin(115200);
-  delay(2000); // Retardo crucial para estabilizar voltajes
+  delay(2000); 
   
   Serial.println("\n--- INICIANDO NODO TOBILLO (AP) ---");
   
-  // 1. Iniciar Wi-Fi de forma gentil
   Serial.println("[Paso 1] Encendiendo Wi-Fi...");
   WiFi.mode(WIFI_AP);
   delay(100);
   WiFi.softAP(ssid, password);
-  delay(1000); // Dejar que el pico de corriente pase
+  delay(1000); 
   Serial.print("IP del Router: "); Serial.println(WiFi.softAPIP());
 
-  // 2. Iniciar I2C con velocidad reducida por seguridad
-  Serial.println("[Paso 2] Iniciando bus I2C (SDA=21, SCL=22)...");
+  // Iniciar I2C en Fast Mode (OBLIGATORIO para 400Hz)
+  Serial.println("[Paso 2] Iniciando bus I2C (SDA=21, SCL=22) a 400kHz...");
   Wire.begin(21, 22);
-  Wire.setClock(100000); 
+  Wire.setClock(400000); 
   
-  // 3. Chequeo manual del MPU6050 antes de colgar la librería
-  Wire.beginTransmission(0x68); // Dirección típica del MPU6050
+  Wire.beginTransmission(0x68); 
   byte errorI2C = Wire.endTransmission();
   
   if (errorI2C == 0) {
@@ -86,7 +84,8 @@ void setup() {
     if (mpu.begin()) {
         mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
         mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-        mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
+        // Filtro adaptado para 400Hz (evitar sobre-suavizado)
+        mpu.setFilterBandwidth(MPU6050_BAND_94_HZ); 
         mpu_ok = true;
         Serial.println("  -> [OK] MPU6050 Configurado.");
     } else {
@@ -94,14 +93,13 @@ void setup() {
         mpu_ok = false;
     }
   } else {
-    Serial.println("  -> [CRÍTICO] No hay respuesta en 0x68. El MPU6050 está desconectado o dañado.");
+    Serial.println("  -> [CRÍTICO] No hay respuesta en 0x68. MPU6050 no detectado.");
     Serial.println("  -> El sistema seguirá funcionando SOLO CON EMG.");
     mpu_ok = false;
   }
 
   analogReadResolution(12);
 
-  // 4. Mensaje SYNC inicial
   Serial.println("[Paso 3] Enviando mensaje SYNC UDP...");
   struct timeval tv; gettimeofday(&tv, NULL);
   char sync_msg[100];
@@ -113,23 +111,18 @@ void setup() {
   payload_len = 0; memset(payload, 0, sizeof(payload));
   ultimo_muestreo_us = micros();
   
-  Serial.println("\n>>> TOBILLO INICIADO - LOOP ACTIVO <<<");
+  Serial.println("\n>>> TOBILLO INICIADO - LOOP ACTIVO (400 Hz) <<<");
 }
 
 void loop() {
   unsigned long t_actual = micros();
 
-  // Prevención de desbordamiento (Watchdog timeout)
-  if (t_actual < ultimo_muestreo_us) {
-      ultimo_muestreo_us = t_actual;
-  }
-
+  // El cálculo (t_actual - ultimo_muestreo_us) maneja el desbordamiento de forma nativa
   if (t_actual - ultimo_muestreo_us >= INTERVALO_US) {
-    ultimo_muestreo_us = t_actual;
+    ultimo_muestreo_us += INTERVALO_US; // Mantiene una cadencia matemáticamente perfecta
 
     float ax = 0, ay = 0, az = 0;
     
-    // Solo leemos el MPU si fue detectado exitosamente
     if (mpu_ok) {
         sensors_event_t a, g, temp;
         mpu.getEvent(&a, &g, &temp);
@@ -158,15 +151,17 @@ void loop() {
         udp_datos.write((const uint8_t*)payload, payload_len);
         udp_datos.endPacket();
         
-        // --- TELEMETRÍA EN TERMINAL ---
-        Serial.println("[TX TOBILLO] Paquete enviado.");
-      } else {
-        Serial.println("[TOBILLO] Esperando conexión de MATLAB o Bíceps...");
+        // Telemetría ligera: 1 vez por segundo
+        static int lotesEnviados = 0;
+        lotesEnviados++;
+        if (lotesEnviados % 100 == 0) {
+           Serial.printf("[TOBILLO] %d lotes enviados (400 Hz)\n", lotesEnviados);
+        }
       }
       payload_len = 0; contador = 0; 
     }
   }
   
-  // Ceder control al sistema operativo para evitar Watchdog Reset
-  delay(1); 
+  // yield() es no bloqueante y alimenta al Watchdog sin perder 1 milisegundo completo
+  yield(); 
 }
