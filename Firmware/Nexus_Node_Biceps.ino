@@ -18,7 +18,7 @@
 #include <WiFiUdp.h>
 #include <sys/time.h>
 
-const char* ssid = "AVA_NEXUS";       
+const char* ssid = "AVA_NEXUS";        
 const char* password = "ava_password"; 
 const char* ip_broadcast = "192.168.4.255"; 
 
@@ -28,9 +28,10 @@ const int puerto_control = 9999;
 WiFiUDP udp_datos, udp_control;
 MAX30105 particleSensor;
 
-const int TAMANO_LOTE = 1;
+// 4 muestras a 400 Hz = 10 ms de latencia (100 paquetes UDP por segundo, red estable)
+const int TAMANO_LOTE = 4;
 int contador = 0;
-char payload[512]; 
+char payload[1024]; // Buffer ampliado para acomodar 4 tramas
 int payload_len = 0;
 
 uint16_t crc16(const char* data, int len) {
@@ -60,15 +61,16 @@ void setup() {
   if (WiFi.status() != WL_CONNECTED) ESP.restart();
 
   Wire.begin(21, 22);
-  Wire.setClock(100000); 
+  Wire.setClock(400000); // 400kHz I2C Fast Mode OBLIGATORIO para 400Hz
 
-  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+  // Iniciar MAX30105 en modo de alta velocidad I2C
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
     Serial.println("[ERROR] MAX30105 no encontrado.");
     delay(1000); ESP.restart();
   }
 
-  // Hardware a 100Hz estables
-  particleSensor.setup(60, 4, 2, 100, 411, 16384);
+  // Configuración a 400Hz estables
+  particleSensor.setup(60, 4, 2, 400, 411, 16384);
   particleSensor.setPulseAmplitudeRed(0x7A);
   particleSensor.setPulseAmplitudeIR(0x3F);
 
@@ -81,7 +83,7 @@ void setup() {
   udp_control.endPacket();
 
   payload_len = 0; memset(payload, 0, sizeof(payload));
-  Serial.println("\n>>> BICEPS CONECTADO - MONITOR DE RED ACTIVO <<<");
+  Serial.println("\n>>> BICEPS CONECTADO - MONITOR DE RED ACTIVO (400 Hz) <<<");
   Serial.print("IP Asignada: "); Serial.println(WiFi.localIP());
 }
 
@@ -91,10 +93,10 @@ void loop() {
   }
 
   static int health_check = 0;
-  if (++health_check >= 200) { 
+  if (++health_check >= 800) { // Menos invasivo a 400Hz
     Wire.beginTransmission(0x57); 
     if (Wire.endTransmission() != 0) {
-      if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) ESP.restart();
+      if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) ESP.restart();
     }
     health_check = 0;
   }
@@ -102,7 +104,7 @@ void loop() {
   particleSensor.check();
 
   int samplesToRead = particleSensor.available();
-  if (samplesToRead > 10) samplesToRead = 10; 
+  if (samplesToRead > 32) samplesToRead = 32; // FIFO completo del MAX30105
 
   while (samplesToRead--) {
     struct timeval tv; gettimeofday(&tv, NULL);
@@ -128,11 +130,11 @@ void loop() {
       udp_datos.write((const uint8_t*)payload, payload_len);
       udp_datos.endPacket();
       
-      // 👉 Indicador ligero de actividad (una línea cada ~50 ms, sin saturar)
+      // Indicador ligero de actividad (imprime 1 vez por segundo a 400Hz)
       static int lotesEnviados = 0;
       lotesEnviados++;
-      if (lotesEnviados % 20 == 0) {  // imprime cada 20 lotes (cada 1 segundo)
-        Serial.printf("[BICEPS] %d lotes enviados\n", lotesEnviados);
+      if (lotesEnviados % 100 == 0) {
+        Serial.printf("[BICEPS] %d lotes enviados (400 Hz)\n", lotesEnviados);
       }
       
       payload_len = 0; contador = 0; 
