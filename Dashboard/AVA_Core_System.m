@@ -22,7 +22,7 @@ function AVA_Core_System()
         'BufferMax', struct('Horas', 10, 'Muestras', 100 * 3600 * 10), ...
         'UI', struct('RefrescoGraficas_Muestras', 10, 'RefrescoVitales_Muestras', 25), ... 
         'Backup', struct('MuestrasIntervalo', 100 * 300), ... 
-        'Umbrales', struct('IR_Minimo_Dedo', 3000, 'EMG_Contraccion', 50, 'SVM_Movimiento', 0.4), ...
+        'Umbrales', struct('IR_Minimo_Dedo', 10000, 'EMG_Contraccion', 50, 'SVM_Movimiento', 0.4), ...
         'Filtros', struct('Alpha_SVM', 0.005, 'Alpha_EMG_HP', 0.05, 'Alpha_EMG_LP', 0.1) ... 
     );
 
@@ -73,7 +73,7 @@ function AVA_Core_System()
 
     UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Envolvente (AD8232 + DSP)'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 3];
     UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM (DSP)'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 3];
-
+    
     numPuntosGrafica = 6000; 
     UI.lineaEMG = animatedline(UI.axEMG_TR, 'Color', [1 0.5 0], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     UI.lineaSVM = animatedline(UI.axSVM_TR, 'Color', [0 0.4 1], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
@@ -119,7 +119,7 @@ function AVA_Core_System()
     while ishandle(UI.Fig)
         if Estado.Capturando 
             try
-                lineasB = leerYValidarBatch(Red.UdpBiceps, 5); 
+                lineasB = leerYValidarBatch(Red.UdpBiceps, 5); 1
                 lineasT = leerYValidarBatch(Red.UdpTobillo, 7); 
                 
                 % ==============================================================
@@ -429,40 +429,73 @@ function AVA_Core_System()
         crcHex = sprintf('%04X', crc);
     end
 
-    function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
+function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
         spo2 = NaN; bpm = NaN; is_artifact = true;
         
-        if length(bR) < fs * 3 || length(bI) < fs * 3, return; end
+        % Necesitamos al menos 3 segundos de datos para garantizar picos de BPM
+        vent_bpm = fs * 3; 
+        if length(bR) < vent_bpm, return; end
         
-        bI_DC = movmean(bI, fs * 2); 
-        bI_AC = bI - bI_DC; 
-        bI_Filt = movmean(bI_AC, round(fs/10));
+        % =========================================================
+        % 1. CÁLCULO DE SPO2 (MATEMÁTICA EXACTA DE LA VERSIÓN 1)
+        % =========================================================
+        % Tomamos solo las últimas 150 muestras (1.5s) para evitar el 
+        % ruido de baja frecuencia (respiración) en la desviación estándar.
+        vent_spo2 = round(fs * 1.5);
+        bR_spo2 = bR(end-vent_spo2+1 : end);
+        bI_spo2 = bI(end-vent_spo2+1 : end);
         
-        umbral = std(bI_Filt, 'omitnan') * 0.5;
+        dc_r = mean(bR_spo2); 
+        dc_i = mean(bI_spo2);
         
-        % MinPeakDistance a fs*0.25 permite detectar hasta 240 BPM
-        [~, locs] = findpeaks(bI_Filt, 'MinPeakHeight', umbral, 'MinPeakDistance', fs*0.25);
+        ac_r = std(bR_spo2 - dc_r); 
+        ac_i = std(bI_spo2 - dc_i);
         
-        if length(locs) < 5, return; end
-        
-        bpmCalculado = 60 / (mean(diff(locs)) / fs);
-        
-        % Rango fisiológico expandido (30 - 220 BPM)
-        if bpmCalculado < 30 || bpmCalculado > 220, return; end
-        
-        bR_DC = movmean(bR, fs * 2); 
-        bR_AC = bR - bR_DC;
-        dcR = mean(bR_DC, 'omitnan'); 
-        dcI = mean(bI_DC, 'omitnan');
-        
-        if dcR > 0 && dcI > 0
-            R = (rms(bR_AC) / dcR) / (rms(bI_AC) / dcI);
-            spo2 = max(80, min(100, -45.060 * (R^2) + 30.354 * R + 94.845));
-            bpm = bpmCalculado; 
-            is_artifact = false;
+        if dc_r > 0 && dc_i > 0
+            % R = (AC Rojo / DC Rojo) / (AC Infrarrojo / DC Infrarrojo)
+            R = (ac_r / dc_r) / (ac_i / dc_i);
+            s_calc = 110 - (25 * R); % Fórmula directa de tu V1
+            
+            % Límites de seguridad médicos
+            if s_calc > 100, s_calc = 99; end
+            if s_calc < 80, s_calc = 80; end 
+            spo2 = s_calc;
         end
-    end
-    
+        
+        % =========================================================
+        % 2. CÁLCULO DE BPM (LÓGICA ADAPTADA DE LA VERSIÓN 1)
+        % =========================================================
+        bR_bpm = bR(end-vent_bpm+1 : end);
+        bI_bpm = bI(end-vent_bpm+1 : end);
+        dc_i_bpm = mean(bI_bpm);
+        
+        try
+            % V1 usaba: movmean(bI-dc_i, 5) con MinPeakDistance = 10
+            % Adaptado a 100 Hz: aumentamos la distancia a 30 muestras (0.3 seg)
+            senal_suavizada = movmean(bI_bpm - dc_i_bpm, 10);
+            [pks, locs] = findpeaks(senal_suavizada, 'MinPeakDistance', 45, 'MinPeakHeight',std(senal_suavizada)*0.5);
+            %% 
+            
+            if length(locs) > 1
+                % Diferencia de tiempo en segundos usando 'fs' (100 Hz)
+                dt = diff(locs) / fs; 
+                b_calc = mean(60 ./ dt);
+                
+                % Rango fisiológico (40 - 180 BPM como en tu V1)
+                if b_calc > 45 && b_calc < 180
+                    bpm = b_calc;
+                    is_artifact = false; % Datos limpios y válidos
+                end
+            end
+        catch
+            % Silencio, si falla matemáticamente es artefacto/ruido
+        end
+        
+        % Excepción: Si logra calcular SpO2 pero aún no detecta el segundo pico de BPM
+        if ~isnan(spo2) && isnan(bpm)
+            is_artifact = false; % Permitir pasar para no congelar la SpO2
+        end
+    end    
     function [anotFinal, mEpi, validosPLM] = procesarAASM(t, e, s, spo2_data, fs, cfg)
         fus = (e > cfg.Umbrales.EMG_Contraccion) & (s > cfg.Umbrales.SVM_Movimiento);
         
