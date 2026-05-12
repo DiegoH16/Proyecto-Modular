@@ -1,17 +1,3 @@
-% Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
-    %
-    % Licensed under the Apache License, Version 2.0 (the "License");
-    % you may not use this file except in compliance with the License.
-    % You may obtain a copy of the License at
-    %
-    %     http://www.apache.org/licenses/LICENSE-2.0
-    %
-    % Unless required by applicable law or agreed to in writing, software
-    % distributed under the License is distributed on an "AS IS" BASIS,
-    % WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-    % See the License for the specific language governing permissions and
-    % limitations under the License.
-
 function AVA_Core_System()
     clearvars; clc; close all force;
     
@@ -119,7 +105,7 @@ function AVA_Core_System()
     while ishandle(UI.Fig)
         if Estado.Capturando 
             try
-                lineasB = leerYValidarBatch(Red.UdpBiceps, 5); 1
+                lineasB = leerYValidarBatch(Red.UdpBiceps, 5); 
                 lineasT = leerYValidarBatch(Red.UdpTobillo, 7); 
                 
                 % ==============================================================
@@ -429,7 +415,7 @@ function AVA_Core_System()
         crcHex = sprintf('%04X', crc);
     end
 
-function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
+    function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
         spo2 = NaN; bpm = NaN; is_artifact = true;
         
         % Necesitamos al menos 3 segundos de datos para garantizar picos de BPM
@@ -471,18 +457,19 @@ function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
         
         try
             % V1 usaba: movmean(bI-dc_i, 5) con MinPeakDistance = 10
-            % Adaptado a 100 Hz: aumentamos la distancia a 30 muestras (0.3 seg)
+            % Adaptado a 100 Hz y ajustado para 240 BPM MAX (MinPeakDistance = 25)
             senal_suavizada = movmean(bI_bpm - dc_i_bpm, 10);
-            [pks, locs] = findpeaks(senal_suavizada, 'MinPeakDistance', 45, 'MinPeakHeight',std(senal_suavizada)*0.5);
-            %% 
+            
+            % EL CAMBIO ESTÁ AQUÍ (MinPeakDistance a 25)
+            [pks, locs] = findpeaks(senal_suavizada, 'MinPeakDistance', 25, 'MinPeakHeight',std(senal_suavizada)*0.5);
             
             if length(locs) > 1
                 % Diferencia de tiempo en segundos usando 'fs' (100 Hz)
                 dt = diff(locs) / fs; 
                 b_calc = mean(60 ./ dt);
                 
-                % Rango fisiológico (40 - 180 BPM como en tu V1)
-                if b_calc > 45 && b_calc < 180
+                % EL CAMBIO ESTÁ AQUÍ (Rango de 30 a 220 BPM)
+                if b_calc >= 30 && b_calc <= 220
                     bpm = b_calc;
                     is_artifact = false; % Datos limpios y válidos
                 end
@@ -496,6 +483,7 @@ function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
             is_artifact = false; % Permitir pasar para no congelar la SpO2
         end
     end    
+    
     function [anotFinal, mEpi, validosPLM] = procesarAASM(t, e, s, spo2_data, fs, cfg)
         fus = (e > cfg.Umbrales.EMG_Contraccion) & (s > cfg.Umbrales.SVM_Movimiento);
         
