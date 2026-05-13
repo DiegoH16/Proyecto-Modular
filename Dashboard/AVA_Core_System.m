@@ -1,20 +1,20 @@
 %{
-Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
+ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
+  
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+   
+        http://www.apache.org/licenses/LICENSE-2.0
     
-     Licensed under the Apache License, Version 2.0 (the "License");
-     you may not use this file except in compliance with the License.
-     You may obtain a copy of the License at
-    
-         http://www.apache.org/licenses/LICENSE-2.0
-    
-     nless required by applicable law or agreed to in writing, software
-     distributed under the License is distributed on an "AS IS" BASIS,
-     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-     See the License for the specific language governing permissions and
-     limitations under the License.
-     %}
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+%}
 
- function AVA_Core_System()
+function AVA_Core_System()
     clearvars; clc; close all force;
     
     %% --- 1. CONFIGURACIÓN CLÍNICA ESTRICTA (100 Hz) ---
@@ -94,14 +94,15 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
     Analisis = struct();
     Analisis.T = [];
     Analisis.Anotaciones = [];
-    Analisis.EventosPLM = [];
+    Analisis.EventosNav = []; 
     Analisis.IdxNav = 0;
-    Analisis.TotPLM = 0;
-    Analisis.TotEpisodios = 0;
+    Analisis.TotNav = 0;
+    Analisis.LineasGuia = []; 
     
     Archivos = struct();
     Archivos.Senales = "";
-    Archivos.Anotaciones = "";
+    Archivos.EDF_Input = "";
+    Archivos.EDF_Ruta = "";
     
     Red = struct();
     Red.UdpTobillo = [];
@@ -118,17 +119,19 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
     UI.PnlMenu = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w');
     UI.PnlAdq  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     UI.PnlAna  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
+    UI.PnlConv = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
 
     % --- MENÚ PRINCIPAL ---
     uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V7.5', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
-    uibutton(UI.PnlMenu, 'Text', '1. Adquisición de Datos (UDP)', 'FontSize', 18, 'Position', [400, 450, 400, 60], 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlAdq));
-    uibutton(UI.PnlMenu, 'Text', '2. Analizador Clínico (SPI)', 'FontSize', 18, 'Position', [400, 350, 400, 60], 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlAna));
+    uibutton(UI.PnlMenu, 'Text', '1. Adquisicion de Datos (UDP)', 'FontSize', 18, 'Position', [400, 450, 400, 60], 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlAdq));
+    uibutton(UI.PnlMenu, 'Text', '2. Analizador Clinico (SPI)', 'FontSize', 18, 'Position', [400, 350, 400, 60], 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlAna));
+    uibutton(UI.PnlMenu, 'Text', '3. Convertidor EDF a CSV', 'FontSize', 18, 'Position', [400, 250, 400, 60], 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlConv));
 
     % --- PANEL DE ADQUISICIÓN ---
     gAdq = uigridlayout(UI.PnlAdq, [6, 4], 'RowHeight', {'1x', '1x', 80, 70, 60, 60}, 'ColumnWidth', {'1x', '1x', '1x', 140}, 'Padding', 20);
 
     UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Envolvente (AD8232 + DSP)'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 4];
-    UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM (DSP)'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 4];
+    UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafia SVM (DSP)'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 4];
 
     numPuntosGrafica = 6000; 
     UI.lineaEMG = animatedline(UI.axEMG_TR, 'Color', [1 0.5 0], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
@@ -148,35 +151,52 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
     UI.lblMemoria = uilabel(gAdq, 'Text', 'RAM: --', 'FontSize', 12, 'HorizontalAlignment', 'right');
     UI.lblMemoria.Layout.Row = 5; UI.lblMemoria.Layout.Column = 4;
     
-    UI.btnUDP = uibutton(gAdq, 'Text', '▶ Conectar Hardware', 'FontSize', 16, 'FontWeight', 'bold', 'BackgroundColor', [0.2 0.6 0.2], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) alternarCaptura());
+    UI.btnUDP = uibutton(gAdq, 'Text', 'Conectar Hardware', 'FontSize', 16, 'FontWeight', 'bold', 'BackgroundColor', [0.2 0.6 0.2], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) alternarCaptura());
     UI.btnUDP.Layout.Row = 6; UI.btnUDP.Layout.Column = [1 2];
 
     btnExp = uibutton(gAdq, 'Text', 'Finalizar y Exportar', 'FontSize', 14, 'BackgroundColor', [0.1 0.1 0.1], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) detenerYExportar());
     btnExp.Layout.Row = 6; btnExp.Layout.Column = 3;
     
-    btnVolverAdq = uibutton(gAdq, 'Text', '🏠 Volver', 'FontSize', 14, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
+    btnVolverAdq = uibutton(gAdq, 'Text', 'VOLVER AL MENU', 'FontSize', 14, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
     btnVolverAdq.Layout.Row = 6; btnVolverAdq.Layout.Column = 4;
 
     % --- PANEL DE ANÁLISIS ---
     gAna = uigridlayout(UI.PnlAna, [2, 1], 'RowHeight', {45, '1x'}, 'Padding', 5);
-    gToolbar = uigridlayout(gAna, [1, 10], 'ColumnWidth', {120, 120, 140, 30, 60, 60, 60, '1x', 120, 160}, 'Padding', 2);
+    gToolbar = uigridlayout(gAna, [1, 10], 'ColumnWidth', {120, 140, 30, 60, 60, 60, '1x', 140, 120, 160}, 'Padding', 2);
 
-    uibutton(gToolbar, 'Text', '📁 Cargar CSV', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) cargarArchivo('DATOS'));
-    uibutton(gToolbar, 'Text', '📝 Cargar TXT', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) cargarArchivo('ANOT'));
-
-    UI.lblArchivoData = uilabel(gToolbar, 'Text', 'Ningún archivo', 'FontSize', 9, 'FontColor', [0.4 0.4 0.4], 'WordWrap', 'off');
+    uibutton(gToolbar, 'Text', '📁 Cargar CSV', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) cargarArchivo());
+    
+    UI.lblArchivoData = uilabel(gToolbar, 'Text', 'Ningun archivo', 'FontSize', 9, 'FontColor', [0.4 0.4 0.4], 'WordWrap', 'off');
     uilabel(gToolbar, 'Text', '|', 'HorizontalAlignment', 'center');
     
     uibutton(gToolbar, 'Text', '<< Ant', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) navegarEpisodios(-1));
     uibutton(gToolbar, 'Text', 'Sig >>', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) navegarEpisodios(1));
     uibutton(gToolbar, 'Text', 'Todo', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) verTodoAnalisis());
 
-    UI.lblEpi = uilabel(gToolbar, 'Text', 'SPI: 0 / 0 | Episodios: --', 'FontSize', 13, 'FontWeight', 'bold', 'FontColor', [0.7 0.1 0.1], 'HorizontalAlignment', 'center');
+    UI.lblEpi = uilabel(gToolbar, 'Text', 'Nav Serie PLM: 0 / 0 | LMs: 0', 'FontSize', 13, 'FontWeight', 'bold', 'FontColor', [0.7 0.1 0.1], 'HorizontalAlignment', 'center');
 
+    uibutton(gToolbar, 'Text', 'ℹ️ Reglas AASM', 'FontSize', 12, 'BackgroundColor', [0.9 0.9 0.9], 'FontWeight', 'bold', 'ButtonPushedFcn', @(~,~) mostrarReglasAASM());
+    
     uibutton(gToolbar, 'Text', '⚙️ PROCESAR', 'BackgroundColor', [0 0.4 0.8], 'FontColor', 'w', 'FontSize', 12, 'FontWeight', 'bold', 'ButtonPushedFcn', @(~,~) ejecutarAnalisisPro());
-    uibutton(gToolbar, 'Text', '🏠 VOLVER AL MENÚ', 'FontSize', 12, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'FontWeight', 'bold', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
+    uibutton(gToolbar, 'Text', 'VOLVER AL MENU', 'FontSize', 12, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'FontWeight', 'bold', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
     
     UI.pnlGraficasAna = uipanel(gAna, 'BorderType', 'none', 'BackgroundColor', 'w');
+
+    % --- PANEL DE CONVERSIÓN EDF ---
+    gConv = uigridlayout(UI.PnlConv, [4, 3], 'RowHeight', {60, 60, '1x', 60}, 'ColumnWidth', {200, '1x', 200}, 'Padding', 50);
+    
+    uibutton(gConv, 'Text', '📁 Cargar Archivo EDF', 'FontSize', 14, 'ButtonPushedFcn', @(~,~) cargarEDFParaConvertir());
+    UI.lblArchivoEDF = uilabel(gConv, 'Text', 'Ningun archivo seleccionado', 'FontSize', 12);
+    UI.lblArchivoEDF.Layout.Column = [2 3];
+    
+    UI.btnConvertirEDF = uibutton(gConv, 'Text', '⚙️ CONVERTIR A CSV', 'FontSize', 14, 'BackgroundColor', [0 0.4 0.8], 'FontColor', 'w', 'Enable', 'off', 'ButtonPushedFcn', @(~,~) procesarEDF_UI());
+    UI.btnConvertirEDF.Layout.Row = 2; UI.btnConvertirEDF.Layout.Column = 2;
+
+    UI.txtConsola = uitextarea(gConv, 'Value', 'Listo para convertir. Por favor cargue un archivo EDF.', 'Editable', 'off', 'FontSize', 12, 'FontName', 'Consolas');
+    UI.txtConsola.Layout.Row = 3; UI.txtConsola.Layout.Column = [1 3];
+
+    btnVolverConv = uibutton(gConv, 'Text', 'VOLVER AL MENU', 'FontSize', 14, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
+    btnVolverConv.Layout.Row = 4; btnVolverConv.Layout.Column = 3;
 
     %% --- 4. BUCLE PRINCIPAL (DESACOPLADO) ---
     while ishandle(UI.Fig)
@@ -187,16 +207,13 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
                 
                 if isempty(lineasT) && isempty(lineasB)
                     if toc(Estado.TiempoUltimoPaquete) > 2.0 && (Estado.UI.MuestrasTobillo > 0 || Estado.UI.MuestrasBiceps > 0)
-                        UI.lblInfo.Text = '⚠️ SENSOR DESCONECTADO (Sin datos > 2s)'; 
+                        UI.lblInfo.Text = 'SENSOR DESCONECTADO (Sin datos > 2s)'; 
                         UI.lblInfo.FontColor = [1 0 0];
                     end
                 else
                     Estado.TiempoUltimoPaquete = tic;
                 end
 
-                % ==============================================================
-                % 1. PROCESAMIENTO DEL BÍCEPS (TOTALMENTE INDEPENDIENTE)
-                % ==============================================================
                 if ~isempty(lineasB)
                     for i = 1:size(lineasB, 1)
                         red_raw = lineasB(i, 3); ir_raw = lineasB(i, 4);
@@ -253,9 +270,6 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
                     end
                 end
 
-                % ==============================================================
-                % 2. PROCESAMIENTO DEL TOBILLO (RELOJ MAESTRO DEL ESTUDIO)
-                % ==============================================================
                 if ~isempty(lineasT)
                     for i = 1:size(lineasT, 1)
                         t_abs = lineasT(i, 1) + lineasT(i, 2) / 1e6;
@@ -292,7 +306,7 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
                             if Estado.Calibracion.Cuenta >= Estado.Calibracion.MuestrasRequeridas
                                 std_emg = std(Estado.Calibracion.EMG_Data); std_svm = std(Estado.Calibracion.SVM_Data);
                                 if std_emg > 80 || std_svm > 0.5 
-                                    UI.lblInfo.Text = '¡RUIDO EXCESIVO! REINICIANDO...'; UI.lblInfo.FontColor = [1 0 0];
+                                    UI.lblInfo.Text = 'RUIDO EXCESIVO! REINICIANDO...'; UI.lblInfo.FontColor = [1 0 0];
                                     Estado.Calibracion.Cuenta = 0; 
                                 else
                                     Config.Umbrales.EMG_Contraccion = max(10, mean(Estado.Calibracion.EMG_Data) + 5 * std_emg);
@@ -334,11 +348,22 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
                     end
                 end
             catch ME
-                logSistema('WARN', ['Excepción: ', ME.message]);
+                logSistema('WARN', ['Excepcion en Bucle UDP: ', ME.message]);
+                
+                % MEJORA DE SEGURIDAD: Prevenir Desbordamiento (Overflow) UDP
+                % Si hay un error, tiramos la basura del buffer para no saturar la memoria
+                if isfield(Red, 'UdpTobillo') && ~isempty(Red.UdpTobillo) && isvalid(Red.UdpTobillo)
+                    flush(Red.UdpTobillo);
+                end
+                if isfield(Red, 'UdpBiceps') && ~isempty(Red.UdpBiceps) && isvalid(Red.UdpBiceps)
+                    flush(Red.UdpBiceps);
+                end
             end
         end
-        drawnow; 
-        pause(0.005); 
+        
+        % MEJORA DE RENDIMIENTO: Límite de refresco para no asfixiar el CPU
+        % En lugar de pausar el código ciegamente, limitamos el dibujo a 20 FPS máximo.
+        drawnow limitrate; 
     end
 
     %% --- 5. FUNCIONES DE CONTROL PRINCIPALES ---
@@ -352,7 +377,7 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
             Estado.UI.ContraccionPrevia = false; 
             Estado.UI.MuestrasTobillo = 0; Estado.UI.MuestrasBiceps = 0; Estado.UI.MuestrasDesdeUltimoBackup = 0;
             Estado.Vitales.BufferRed = []; Estado.Vitales.BufferIR = [];
-            Analisis.T = []; Analisis.Anotaciones = []; Analisis.EventosPLM = []; Analisis.IdxNav = 0;
+            Analisis.T = []; Analisis.Anotaciones = []; Analisis.EventosNav = []; Analisis.IdxNav = 0;
 
             try 
                 Red.UdpTobillo = udpport("datagram", "LocalPort", Config.Puertos.Tobillo); Red.UdpTobillo.Timeout = 0.5;
@@ -363,10 +388,10 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
             
             UI.lblInfo.Text = "ESTABILIZANDO SEÑAL..."; UI.lblInfo.FontColor = [0.8 0.1 0];
             clearpoints(UI.lineaEMG); clearpoints(UI.lineaSVM); 
-            UI.btnUDP.Text = "⏹ Detener"; UI.btnUDP.BackgroundColor = [1 0.4 0.4];
+            UI.btnUDP.Text = "Detener"; UI.btnUDP.BackgroundColor = [1 0.4 0.4];
         else
             liberarRecursos(Red);
-            UI.btnUDP.Text = "▶ Conectar Hardware"; UI.btnUDP.BackgroundColor = [0.2 0.6 0.2];
+            UI.btnUDP.Text = "Conectar Hardware"; UI.btnUDP.BackgroundColor = [0.2 0.6 0.2];
             UI.lblInfo.Text = "EN ESPERA"; UI.lblInfo.FontColor = [0.5 0.5 0.5];
         end
     end
@@ -376,12 +401,12 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
         if RingBuffer.Count == 0, uialert(UI.Fig, 'Sin datos.', 'Aviso'); return; end
         
         prompt = {'Ingrese el identificador del paciente (Ej. Paciente-1, ID-456):'};
-        dlgtitle = 'Guardar Estudio Clínico';
+        dlgtitle = 'Guardar Estudio Clinico';
         definput = {'Paciente-1'};
         respuesta = inputdlg(prompt, dlgtitle, [1 50], definput);
         
         if isempty(respuesta)
-            uialert(UI.Fig, 'Exportación cancelada. Los datos siguen en memoria.', 'Aviso');
+            uialert(UI.Fig, 'Exportacion cancelada. Los datos siguen en memoria.', 'Aviso');
             return; 
         end
         
@@ -398,9 +423,8 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
         
         try
             nameCSV = fullfile(rutaSalida, sprintf('%s_%s.csv', idPaciente, fStr));
-            nameTXT = fullfile(rutaSalida, sprintf('%s_Anotaciones_%s.txt', idPaciente, fStr));
             
-            [anotFinal, ~, ~] = procesarAASM(t_d, emgEnv_d, svmAc_d, spo2_d, Config.Muestreo.Fs_Hz, Config);
+            [anotFinal, ~] = procesarAASM(t_d, emgEnv_d, svmAc_d, spo2_d, Config.Muestreo.Fs_Hz, Config);
             
             fid = fopen(nameCSV, 'w');
             fprintf(fid, '# AVA Nexus V7.5 Data Lake (Hardware Timestamps)\n# Exportado: %s\n# Fs_Hz: %d\n# Thr_EMG: %.4f\n# Thr_SVM: %.4f\n', char(datetime('now')), Config.Muestreo.Fs_Hz, Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento);
@@ -410,48 +434,268 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
             fprintf(fid, '%.6f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.6f,%.6f,%.0f,%.0f,%d\n', MatrizSalida);
             fclose(fid);
             
-            fidTxt = fopen(nameTXT, 'w');
-            fprintf(fidTxt, 'Tiempo_s_Abs,Anot_SPI\n');
-            fprintf(fidTxt, '%.6f,%d\n', [t_d, anotFinal]');
-            fclose(fidTxt);
-            
             try rmdir(fullfile(pwd, 'AVA_Nexus_Data', '.cache_incremental'), 's'); catch; end
             
-            uialert(UI.Fig, sprintf('Exportado Correctamente:\n%d muestras del %s', length(t_d), idPaciente), 'Éxito');
+            uialert(UI.Fig, sprintf('Exportado Correctamente:\n%d muestras del %s', length(t_d), idPaciente), 'Exito');
         catch ME
-            uialert(UI.Fig, ['Error crítico: ', ME.message], 'Fallo Sistema');
+            uialert(UI.Fig, ['Error critico: ', ME.message], 'Fallo Sistema');
         end
         cambiarPanel(UI.PnlMenu);
     end
 
+    function mostrarReglasAASM()
+        mensaje = [
+            "CRITERIOS AASM APLICADOS (Academia Americana de Medicina del Sueno):"
+            ""
+            "LMs Aislados (Movimiento de Pierna):"
+            "   • Amplitud: Al menos 8 uV sobre la linea base de reposo."
+            "   • Duracion: Entre 0.5 seg y 10.0 seg."
+            "   • Fusion: Contracciones a menos de 0.5 seg se unen en una sola."
+            "   *Nota: En esta vista limpia, los LMs que no logran formar una serie se ocultan visualmente.*"
+            ""
+            "Serie PLM (Movimientos Periodicos - Rojo):"
+            "   • Cantidad: Deben agruparse al menos 4 LMs consecutivos."
+            "   • Periodicidad: El tiempo entre el inicio de un LM y el siguiente "
+            "     debe ser estrictamente de 5.0 a 90.0 seg."
+            "   • Excepcion (iLM): Si un LM ocurre a menos de 5.0 seg del anterior,"
+            "     NO suma a la serie, pero TAMPOCO la rompe. El sistema lo ignora y"
+            "     mide el tiempo hasta el siguiente espasmo valido."
+            ""
+            "Actigrafia Sintetica y Compuerta de Ruido:"
+            "   Si se cargan datos hospitalarios sin acelerometro (EDF), el sistema"
+            "   calcula una 'Actigrafia Sintetica' basandose en la energia cinetica"
+            "   del musculo y aplica un umbral dinamico para evitar falsos positivos."
+        ];
+        uialert(UI.Fig, strjoin(mensaje, newline), 'Reglas Clinicas AASM', 'Icon', 'info');
+    end
+
+    %% --- 5.1 FUNCIONES DEL CONVERTIDOR EDF ---
+    function cargarEDFParaConvertir()
+        [n, r] = uigetfile('*.edf', 'Seleccione el archivo EDF del hospital');
+        if ~isequal(n, 0)
+            Archivos.EDF_Input = n;
+            Archivos.EDF_Ruta = r;
+            UI.lblArchivoEDF.Text = fullfile(r, n);
+            UI.btnConvertirEDF.Enable = 'on';
+            UI.txtConsola.Value = {'Archivo EDF cargado correctamente.', 'Haga clic en CONVERTIR para seleccionar los canales.'};
+        end
+    end
+
+    function logConsola(msg)
+        if isstring(msg)
+            msg = join(msg, "");
+        end
+        msgTxt = char(msg);
+        UI.txtConsola.Value = [UI.txtConsola.Value; {msgTxt}];
+        scroll(UI.txtConsola, 'bottom');
+        drawnow;
+    end
+
+    function procesarEDF_UI()
+        UI.btnConvertirEDF.Enable = 'off';
+        rutaCompleta = fullfile(Archivos.EDF_Ruta, Archivos.EDF_Input);
+        try
+            logConsola('Leyendo cabeceras del EDF...');
+            info = edfinfo(rutaCompleta);
+            todasLasSenales = string(info.SignalLabels);
+            
+            nombresMostrar = strings(size(todasLasSenales));
+            for k = 1:length(todasLasSenales)
+                senal = upper(todasLasSenales(k)); 
+                if contains(senal, 'DX') || contains(senal, 'RIGHT LEG') || contains(senal, 'LEG R') || contains(senal, 'RAT')
+                    nombresMostrar(k) = "Pierna Derecha (" + todasLasSenales(k) + ")";
+                elseif contains(senal, 'SX') || contains(senal, 'LEFT LEG') || contains(senal, 'LEG L') || contains(senal, 'LAT')
+                    nombresMostrar(k) = "Pierna Izquierda (" + todasLasSenales(k) + ")";
+                elseif contains(senal, 'SAO2') || contains(senal, 'SPO2') || contains(senal, 'O2')
+                    nombresMostrar(k) = "SpO2 (" + todasLasSenales(k) + ")";
+                elseif contains(senal, 'HR') || contains(senal, 'PULSE') || contains(senal, 'PR') || contains(senal, 'BPM')
+                    nombresMostrar(k) = "Frecuencia Cardiaca (" + todasLasSenales(k) + ")";
+                elseif contains(senal, 'C3') || contains(senal, 'C4') || contains(senal, 'F3') || contains(senal, 'F4') || contains(senal, 'O1') || contains(senal, 'O2') || contains(senal, 'A1') || contains(senal, 'A2')
+                    nombresMostrar(k) = "EEG Cerebro (" + todasLasSenales(k) + ")";
+                elseif contains(senal, 'EOG') || contains(senal, 'LOC') || contains(senal, 'ROC')
+                    nombresMostrar(k) = "EOG Ojos (" + todasLasSenales(k) + ")";
+                elseif contains(senal, 'CHIN') || contains(senal, 'MENT') || contains(senal, 'EMG1')
+                    nombresMostrar(k) = "EMG Menton (" + todasLasSenales(k) + ")";
+                elseif contains(senal, 'FLOW') || contains(senal, 'NASAL') || contains(senal, 'CHEST') || contains(senal, 'THOR') || contains(senal, 'ABD')
+                    nombresMostrar(k) = "Respiracion (" + todasLasSenales(k) + ")";
+                else
+                    nombresMostrar(k) = todasLasSenales(k);
+                end
+            end
+            
+            mensajeInstruccion = {'Seleccione los canales clinicos a exportar:', '(Use Ctrl o Shift para elegir varios)'};
+            [idxSeleccion, ok] = listdlg('ListString', cellstr(nombresMostrar), ...
+                                         'PromptString', mensajeInstruccion, ...
+                                         'SelectionMode', 'multiple', ...
+                                         'Name', 'Selector de Canales EDF', ...
+                                         'ListSize', [350 450]);
+                                     
+            if ok == 0
+                logConsola('Operacion cancelada. No se seleccionaron canales.');
+                UI.btnConvertirEDF.Enable = 'on';
+                return;
+            end
+            
+            senalesValidas = todasLasSenales(idxSeleccion);
+            logConsola(sprintf('Extrayendo: %s', strjoin(senalesValidas, ', ')));
+            
+            data = edfread(rutaCompleta, 'SelectedSignals', senalesValidas);
+            Fs_objetivo = 100;
+            numRecords = size(data, 1);
+            duracionRecord = seconds(info.DataRecordDuration);
+            tiempoTotal = numRecords * duracionRecord;
+            
+            t_master = (0 : (tiempoTotal * Fs_objetivo) - 1)' / Fs_objetivo;
+            matrizPlana = zeros(length(t_master), length(senalesValidas));
+            
+            logConsola('Aplanando y sincronizando senales a 100 Hz (puede tomar un minuto)...');
+            
+            nombresVariables = data.Properties.VariableNames;
+            for i = 1:length(nombresVariables)
+                varName = nombresVariables{i};
+                senal_bloques = data.(varName);
+                
+                if iscell(senal_bloques)
+                    senal_flat = cell2mat(senal_bloques);
+                else
+                    senal_flat = reshape(senal_bloques', [], 1);
+                end
+                
+                % MEJORA DE SEGURIDAD: Blindaje contra desconexión de sensores (NaNs)
+                % Rellena con el valor anterior para no romper el interp1 ni propagar NaNs
+                if any(isnan(senal_flat))
+                    senal_flat = fillmissing(senal_flat, 'previous');
+                    senal_flat = fillmissing(senal_flat, 'next'); 
+                end
+                
+                Fs_nativa = length(senal_flat) / tiempoTotal;
+                t_nativo = (0 : length(senal_flat) - 1)' / Fs_nativa;
+                
+                if Fs_nativa < 10
+                    senal_sinc = interp1(t_nativo, double(senal_flat), t_master, 'previous', 'extrap');
+                else
+                    senal_sinc = interp1(t_nativo, double(senal_flat), t_master, 'linear', 'extrap');
+                end
+                matrizPlana(:, i) = senal_sinc;
+            end
+            
+            [~, nombreBase, ~] = fileparts(Archivos.EDF_Input);
+            nombreCSV = fullfile(Archivos.EDF_Ruta, sprintf('%s_Hospital_100Hz.csv', nombreBase));
+            
+            logConsola('Escribiendo el archivo CSV limpio...');
+            fid = fopen(nombreCSV, 'w');
+            fprintf(fid, 'Tiempo_s,%s\n', strjoin(senalesValidas, ','));
+            matrizSalida = [t_master, matrizPlana]';
+            formato = ['%.4f', repmat(',%.4f', 1, length(senalesValidas)), '\n'];
+            fprintf(fid, formato, matrizSalida);
+            fclose(fid);
+            
+            logConsola('==================================================');
+            logConsola(sprintf('EXITO! Archivo creado en: %s', nombreCSV));
+            logConsola('==================================================');
+            
+            UI.btnConvertirEDF.Enable = 'on';
+        catch ME
+            logConsola('ERROR CRITICO:');
+            logConsola(ME.message);
+            UI.btnConvertirEDF.Enable = 'on';
+        end
+    end
+
+    %% --- 5.2 FUNCIONES DEL ANALIZADOR CLÍNICO ---
     function ejecutarAnalisisPro()
         if Archivos.Senales == "", uialert(UI.Fig, 'Seleccione un CSV.', 'Aviso'); return; end
         try
-            data = readmatrix(Archivos.Senales, 'CommentStyle', '#');
-            if size(data, 1) < 10, uialert(UI.Fig, 'CSV inválido o muy corto.', 'Error'); return; end
+            removerLineasGuia();
             
-            numCols = size(data, 2); 
-            if numCols >= 11
+            opts = detectImportOptions(Archivos.Senales);
+            nombresColumnas = opts.VariableNames;
+            
+            data = readmatrix(Archivos.Senales, 'CommentStyle', '#');
+            if size(data, 1) < 10, uialert(UI.Fig, 'CSV invalido o muy corto.', 'Error'); return; end
+            
+            cfgAn = Config; 
+            isEDF = false;
+            
+            if any(contains(nombresColumnas, 'Ax'))
+                % --- CASO A: DATOS NATIVOS AVA NEXUS ---
+                logSistema('INFO', 'Procesando archivo nativo AVA Nexus...');
                 vT = data(:,1); vEMG = data(:,8); vSVM = data(:,9); vSPO2 = data(:,10); vBPM = data(:,11);
-            elseif numCols >= 5
-                vT = data(:,1); vEMG = data(:,2); vSVM = data(:,3); vSPO2 = data(:,4); vBPM = data(:,5);
+                fsReal = 1 / mean(diff(vT), 'omitnan');
+
+            elseif any(contains(nombresColumnas, 'DX1')) || any(contains(nombresColumnas, 'SX1'))
+                % --- CASO B: DATOS HOSPITALARIOS (EDF Transformado) ---
+                logSistema('INFO', 'Procesando archivo de validacion Hospitalaria...');
+                isEDF = true;
+                vT = data(:,1); 
+                fsReal = 1 / mean(diff(vT), 'omitnan');
+                
+                idxD = find(contains(nombresColumnas, 'DX1'), 1);
+                idxS = find(contains(nombresColumnas, 'SX1'), 1);
+                idxO2 = find(contains(nombresColumnas, 'SAO2'), 1);
+                idxHR = find(contains(nombresColumnas, 'HR'), 1);
+                
+                if isempty(idxD), idxD = idxS; end
+                if isempty(idxS), idxS = idxD; end
+                
+                base1 = movmean(data(:,idxD), round(fsReal * 2), 'omitnan');
+                base2 = movmean(data(:,idxS), round(fsReal * 2), 'omitnan');
+                
+                e1 = abs(data(:,idxD) - base1);
+                e2 = abs(data(:,idxS) - base2);
+                
+                % FUSIÓN BILATERAL MATEMÁTICA (Sin ploteo independiente)
+                vEMG_Raw = max(e1, e2);
+                vEMG = movmean(vEMG_Raw, round(fsReal * 0.25), 'omitnan'); 
+                
+                % ACTIGRAFÍA SINTÉTICA (Proxy derivado de la energia del EMG)
+                energia_cinetica = abs(diff([0; vEMG_Raw]));
+                vSVM = movmean(energia_cinetica, round(fsReal * 0.5), 'omitnan');
+                
+                s_svm = sort(vSVM(~isnan(vSVM)));
+                if length(s_svm) > 100
+                    p99 = s_svm(max(1, round(length(s_svm)*0.99)));
+                    if p99 > 0, vSVM = vSVM / p99; end
+                end
+                vSVM(vSVM > 2) = 2; 
+                
+                vSPO2 = data(:,idxO2);
+                vBPM = data(:,idxHR);
+                
+                cfgAn.Umbrales.SVM_Movimiento = 0; 
+                ruido_fondo = std(vEMG(vEMG < median(vEMG, 'omitnan')), 'omitnan'); 
+                cfgAn.Umbrales.EMG_Contraccion = median(vEMG, 'omitnan') + max(8, ruido_fondo * 4); 
             else
-                uialert(UI.Fig, 'Formato CSV no reconocido.', 'Error'); return;
+                uialert(UI.Fig, 'Formato no reconocido: Los encabezados no coinciden con AVA ni Hospital.', 'Error'); return;
             end
             
-            fsReal = 1 / mean(diff(vT), 'omitnan');
-            [Analisis.Anotaciones, mEpi, validosPLM] = procesarAASM(vT, vEMG, vSVM, vSPO2, fsReal, Config);
+            [Analisis.Anotaciones, EpisodiosNav] = procesarAASM(vT, vEMG, vSVM, vSPO2, fsReal, cfgAn);
             
-            Analisis.EventosPLM = validosPLM; Analisis.TotPLM = size(validosPLM, 1);
-            Analisis.TotEpisodios = size(mEpi, 1); Analisis.T = vT; Analisis.IdxNav = 0;
-            actualizarEtiquetaEpisodio(0, Analisis.TotPLM, Analisis.TotEpisodios);
+            Analisis.EventosNav = EpisodiosNav; 
+            Analisis.TotNav = size(EpisodiosNav, 1);
+            Analisis.T = vT; 
+            Analisis.IdxNav = 0;
+            actualizarEtiquetaEpisodio(0, Analisis.TotNav, 0);
             
             delete(UI.pnlGraficasAna.Children); 
             gGrid = uigridlayout(UI.pnlGraficasAna, [4, 1], 'Padding', 0);
             
-            ax1 = uiaxes(gGrid); title(ax1, 'EMG Envolvente + PLM (AASM)'); hold(ax1,'on'); grid(ax1, 'on');
-            plot(ax1, vT, vEMG, 'Color', [0.6 0.6 0.6]); plot(ax1, vT, Analisis.Anotaciones * max(10, max(vEMG)), 'r', 'LineWidth', 1.5);
-            ax2 = uiaxes(gGrid); title(ax2, 'Actigrafía SVM'); plot(ax2, vT, vSVM, 'Color', [0 0.4 0.8]); grid(ax2, 'on');
+            ax1 = uiaxes(gGrid); title(ax1, 'EMG Envolvente | Serie PLM (Rojo)'); hold(ax1,'on'); grid(ax1, 'on');
+            
+            plot(ax1, vT, vEMG, 'Color', [0.6 0.6 0.6], 'LineWidth', 0.5); 
+            
+            vEMG_PLM = vEMG; 
+            vEMG_PLM(Analisis.Anotaciones ~= 2) = NaN; 
+            plot(ax1, vT, vEMG_PLM, 'r', 'LineWidth', 1.5);
+            
+            ax2 = uiaxes(gGrid); 
+            if isEDF
+                title(ax2, 'Actigrafia SVM (SINTETICA: Derivada de Energia EMG)'); 
+            else
+                title(ax2, 'Actigrafia SVM (Sensor Fisico 3D)'); 
+            end
+            plot(ax2, vT, vSVM, 'Color', [0 0.4 0.8]); grid(ax2, 'on');
+            
             ax3 = uiaxes(gGrid); title(ax3, 'SpO2 %'); hold(ax3, 'on'); 
             plot(ax3, vT, vSPO2, 'g'); plot(ax3, vT, movmean(vSPO2, fsReal * 120, 'omitnan'), 'k--', 'LineWidth', 1); ylim(ax3, [85 100]); 
             ax4 = uiaxes(gGrid); title(ax4, 'BPM'); plot(ax4, vT, vBPM, 'r'); ylim(ax4, [40 160]); 
@@ -463,7 +707,7 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
         end
     end
 
-    %% --- 6. PARSEO, CRC Y NATIVAS ---
+    %% --- 6. PARSEO Y NATIVAS ---
     function dataOut = leerYValidarBatch(puerto, expectedCols)
         dataOut = [];
         if isempty(puerto) || ~isvalid(puerto) || puerto.NumDatagramsAvailable == 0, return; end
@@ -567,20 +811,27 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
         end
     end    
     
-    function [anotFinal, mEpi, validosPLM] = procesarAASM(t, e, s, spo2_data, fs, cfg)
+    function [anotFinal, EpisodiosNav] = procesarAASM(t, e, s, spo2_data, fs, cfg)
         fus = (e > cfg.Umbrales.EMG_Contraccion) & (s > cfg.Umbrales.SVM_Movimiento);
         
         fl = diff([0; fus(:); 0]); iI = find(fl==1); iF = find(fl==-1)-1;
-        mPlm_Candidatos = []; mEpi = []; validosPLM = [];
+        mPlm_Candidatos = []; validosPLM = []; EpisodiosNav = [];
         
         if isempty(iI), anotFinal = zeros(size(t)); return; end
         
+        % FUSIÓN (< 0.5s)
         cA = iI(1); cF = iF(1); iIU = []; iFU = [];
         for i = 2:length(iI)
-            if (iI(i) - cF)/fs < 0.5, cF = iF(i); else, iIU(end+1,1)=cA; iFU(end+1,1)=cF; cA=iI(i); cF=iF(i); end %#ok<AGROW>
+            if (iI(i) - cF)/fs < 0.5
+                cF = iF(i); 
+            else
+                iIU(end+1,1) = cA; iFU(end+1,1) = cF; %#ok<AGROW>
+                cA = iI(i); cF = iF(i); 
+            end
         end
-        iIU(end+1,1)=cA; iFU(end+1,1)=cF;
+        iIU(end+1,1) = cA; iFU(end+1,1) = cF;
         
+        % DURACIÓN (0.5s a 10.0s)
         for i = 1:length(iIU)
             dur = (iFU(i) - iIU(i)) / fs; 
             if dur >= 0.5 && dur <= 10.0
@@ -588,22 +839,42 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
             end 
         end
         
+        % AGRUPACIÓN POR CLUSTERS
         if ~isempty(mPlm_Candidatos)
             rt = mPlm_Candidatos(1,:);
+            ultimo_valido_idx = 1;
+            
             for j = 2:size(mPlm_Candidatos,1)
-                inter = (mPlm_Candidatos(j,1) - rt(end,1)) / fs;
+                inter = (mPlm_Candidatos(j,1) - rt(ultimo_valido_idx,1)) / fs;
+                
                 if inter >= 5.0 && inter <= 90.0
                     rt = [rt; mPlm_Candidatos(j,:)]; %#ok<AGROW>
-                else
-                    if size(rt,1) >= 4, mEpi = [mEpi; rt(1,1), rt(end,2), size(rt,1)]; validosPLM = [validosPLM; rt]; end %#ok<AGROW>
+                    ultimo_valido_idx = size(rt,1);
+                elseif inter > 90.0
+                    num_LMs = size(rt,1);
+                    if num_LMs >= 4
+                        EpisodiosNav = [EpisodiosNav; rt(1,1), rt(end,2), num_LMs]; %#ok<AGROW>
+                        validosPLM = [validosPLM; rt]; %#ok<AGROW>
+                    end
                     rt = mPlm_Candidatos(j,:); 
+                    ultimo_valido_idx = 1;
                 end
             end
-            if size(rt,1) >= 4, mEpi = [mEpi; rt(1,1), rt(end,2), size(rt,1)]; validosPLM = [validosPLM; rt]; end
+            
+            num_LMs = size(rt,1);
+            if num_LMs >= 4
+                EpisodiosNav = [EpisodiosNav; rt(1,1), rt(end,2), num_LMs];
+                validosPLM = [validosPLM; rt]; 
+            end
         end
         
         anotFinal = zeros(size(t)); 
-        for k = 1:size(validosPLM,1), anotFinal(validosPLM(k,1):validosPLM(k,2)) = 1; end
+        for k = 1:size(mPlm_Candidatos,1)
+            anotFinal(mPlm_Candidatos(k,1):mPlm_Candidatos(k,2)) = 1; 
+        end
+        for k = 1:size(validosPLM,1)
+            anotFinal(validosPLM(k,1):validosPLM(k,2)) = 2; 
+        end
     end
 
     %% --- 7. UTILIDADES DE MEMORIA Y ESTADO ---
@@ -644,28 +915,63 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
     end
     
     function cargarArchivo(tipo)
-        [n, r] = uigetfile({'*.csv;*.txt'});
+        [n, r] = uigetfile('*.csv');
         if ~isequal(n, 0)
-            if strcmp(tipo, 'DATOS'), Archivos.Senales = fullfile(r, n); UI.lblArchivoData.Text = ['CSV: ' n];
-            else, Archivos.Anotaciones = fullfile(r, n); UI.lblArchivoData.Text = [UI.lblArchivoData.Text ' | TXT: ' n]; end
+            Archivos.Senales = fullfile(r, n); UI.lblArchivoData.Text = ['CSV: ' n];
         end
     end
 
-    function actualizarEtiquetaEpisodio(idx, tPLM, tEpi)
-        if idx < 0 || idx > tPLM || tPLM < 0, idx = 0; tPLM = 0; end
-        try UI.lblEpi.Text = sprintf('SPI: %d / %d | Episodios: %d', idx, tPLM, tEpi); catch, end
+    function actualizarEtiquetaEpisodio(idx, tNav, countLM)
+        if idx < 0 || idx > tNav || tNav < 0, idx = 0; tNav = 0; end
+        if idx == 0, countLM = 0; end
+        try UI.lblEpi.Text = sprintf('Nav Serie PLM: %d / %d | LMs: %d', idx, tNav, countLM); catch, end
+    end
+
+    function removerLineasGuia()
+        if ~isempty(Analisis.LineasGuia)
+            for k=1:length(Analisis.LineasGuia)
+                if ishandle(Analisis.LineasGuia(k))
+                    delete(Analisis.LineasGuia(k));
+                end
+            end
+            Analisis.LineasGuia = [];
+        end
     end
 
     function navegarEpisodios(dir)
-        if isempty(Analisis.EventosPLM) || isempty(UI.AxesAnaLista), return; end
-        Analisis.IdxNav = max(1, min(Analisis.IdxNav + dir, size(Analisis.EventosPLM, 1)));
-        actualizarEtiquetaEpisodio(Analisis.IdxNav, Analisis.TotPLM, Analisis.TotEpisodios);
-        lim = [Analisis.T(Analisis.EventosPLM(Analisis.IdxNav,1)) - 5, Analisis.T(Analisis.EventosPLM(Analisis.IdxNav,2)) + 5];
+        if isempty(Analisis.EventosNav) || isempty(UI.AxesAnaLista), return; end
+        
+        removerLineasGuia();
+        
+        Analisis.IdxNav = max(1, min(Analisis.IdxNav + dir, size(Analisis.EventosNav, 1)));
+        
+        countLM = Analisis.EventosNav(Analisis.IdxNav, 3);
+        actualizarEtiquetaEpisodio(Analisis.IdxNav, Analisis.TotNav, countLM);
+        
+        tStart = Analisis.T(Analisis.EventosNav(Analisis.IdxNav,1));
+        tEnd   = Analisis.T(Analisis.EventosNav(Analisis.IdxNav,2));
+        
+        lim = [tStart - 5, tEnd + 5];
         for i=1:length(UI.AxesAnaLista), xlim(UI.AxesAnaLista(i), lim); end
+        
+        hold(UI.AxesAnaLista(1), 'on'); 
+        estiloGuia = '--y'; 
+        
+        h1 = xline(UI.AxesAnaLista(1), tStart, estiloGuia, 'LineWidth', 1);
+        h2 = xline(UI.AxesAnaLista(1), tEnd, estiloGuia, 'LineWidth', 1);
+        h3 = xline(UI.AxesAnaLista(2), tStart, estiloGuia, 'LineWidth', 1);
+        h4 = xline(UI.AxesAnaLista(2), tEnd, estiloGuia, 'LineWidth', 1);
+        h5 = xline(UI.AxesAnaLista(3), tStart, estiloGuia, 'LineWidth', 1);
+        h6 = xline(UI.AxesAnaLista(3), tEnd, estiloGuia, 'LineWidth', 1);
+        h7 = xline(UI.AxesAnaLista(4), tStart, estiloGuia, 'LineWidth', 1);
+        h8 = xline(UI.AxesAnaLista(4), tEnd, estiloGuia, 'LineWidth', 1);
+        
+        Analisis.LineasGuia = [h1, h2, h3, h4, h5, h6, h7, h8];
     end
 
     function verTodoAnalisis()
         if isempty(Analisis.T) || isempty(UI.AxesAnaLista) || length(Analisis.T) < 2, return; end
+        removerLineasGuia(); 
         for i=1:length(UI.AxesAnaLista), xlim(UI.AxesAnaLista(i), [Analisis.T(1), Analisis.T(end)]); end
     end
 
@@ -682,7 +988,7 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
 
     function cambiarPanel(pTarget)
         cap = Estado.Capturando; if cap, Estado.Capturando = false; pause(0.05); end
-        UI.PnlMenu.Visible = 'off'; UI.PnlAdq.Visible = 'off'; UI.PnlAna.Visible = 'off'; pTarget.Visible = 'on'; 
+        UI.PnlMenu.Visible = 'off'; UI.PnlAdq.Visible = 'off'; UI.PnlAna.Visible = 'off'; UI.PnlConv.Visible = 'off'; pTarget.Visible = 'on'; 
         if cap, Estado.Capturando = true; end
     end
 
