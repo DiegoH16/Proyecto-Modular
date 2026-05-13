@@ -350,8 +350,7 @@ function AVA_Core_System()
             catch ME
                 logSistema('WARN', ['Excepcion en Bucle UDP: ', ME.message]);
                 
-                % MEJORA DE SEGURIDAD: Prevenir Desbordamiento (Overflow) UDP
-                % Si hay un error, tiramos la basura del buffer para no saturar la memoria
+                % MEJORA DE SEGURIDAD: Limpiar buffer UDP si hay un desbordamiento o error
                 if isfield(Red, 'UdpTobillo') && ~isempty(Red.UdpTobillo) && isvalid(Red.UdpTobillo)
                     flush(Red.UdpTobillo);
                 end
@@ -361,8 +360,7 @@ function AVA_Core_System()
             end
         end
         
-        % MEJORA DE RENDIMIENTO: Límite de refresco para no asfixiar el CPU
-        % En lugar de pausar el código ciegamente, limitamos el dibujo a 20 FPS máximo.
+        % MEJORA DE RENDIMIENTO: Evitar congelamiento de CPU, refresco a ~20 FPS.
         drawnow limitrate; 
     end
 
@@ -426,7 +424,12 @@ function AVA_Core_System()
             
             [anotFinal, ~] = procesarAASM(t_d, emgEnv_d, svmAc_d, spo2_d, Config.Muestreo.Fs_Hz, Config);
             
+            % MEJORA SEGURIDAD ARCHIVOS: Verificar que no esté bloqueado por Excel
             fid = fopen(nameCSV, 'w');
+            if fid == -1
+                error('No se pudo crear el archivo CSV. Verifique que no este abierto en otro programa.');
+            end
+            
             fprintf(fid, '# AVA Nexus V7.5 Data Lake (Hardware Timestamps)\n# Exportado: %s\n# Fs_Hz: %d\n# Thr_EMG: %.4f\n# Thr_SVM: %.4f\n', char(datetime('now')), Config.Muestreo.Fs_Hz, Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento);
             fprintf(fid, 'Time_s_Abs,Ax,Ay,Az,EMG_Raw,Red_Raw,IR_Raw,EMG_Env,SVM_ac,SpO2_pct,BPM_bpm,AASM_SPI\n');
             
@@ -493,6 +496,9 @@ function AVA_Core_System()
 
     function procesarEDF_UI()
         UI.btnConvertirEDF.Enable = 'off';
+        UI.Fig.Pointer = 'watch'; % MEJORA UX: Reloj de arena
+        drawnow;
+        
         rutaCompleta = fullfile(Archivos.EDF_Ruta, Archivos.EDF_Input);
         try
             logConsola('Leyendo cabeceras del EDF...');
@@ -523,6 +529,7 @@ function AVA_Core_System()
                 end
             end
             
+            UI.Fig.Pointer = 'arrow'; % Pausa el reloj de arena para la ventana de diálogo
             mensajeInstruccion = {'Seleccione los canales clinicos a exportar:', '(Use Ctrl o Shift para elegir varios)'};
             [idxSeleccion, ok] = listdlg('ListString', cellstr(nombresMostrar), ...
                                          'PromptString', mensajeInstruccion, ...
@@ -535,6 +542,9 @@ function AVA_Core_System()
                 UI.btnConvertirEDF.Enable = 'on';
                 return;
             end
+            
+            UI.Fig.Pointer = 'watch'; % Retoma el reloj de arena
+            drawnow;
             
             senalesValidas = todasLasSenales(idxSeleccion);
             logConsola(sprintf('Extrayendo: %s', strjoin(senalesValidas, ', ')));
@@ -561,8 +571,6 @@ function AVA_Core_System()
                     senal_flat = reshape(senal_bloques', [], 1);
                 end
                 
-                % MEJORA DE SEGURIDAD: Blindaje contra desconexión de sensores (NaNs)
-                % Rellena con el valor anterior para no romper el interp1 ni propagar NaNs
                 if any(isnan(senal_flat))
                     senal_flat = fillmissing(senal_flat, 'previous');
                     senal_flat = fillmissing(senal_flat, 'next'); 
@@ -571,10 +579,14 @@ function AVA_Core_System()
                 Fs_nativa = length(senal_flat) / tiempoTotal;
                 t_nativo = (0 : length(senal_flat) - 1)' / Fs_nativa;
                 
+                % MEJORA MATEMÁTICA: Evitar error de timestamps duplicados del Hospital
+                [t_nativo_u, idx_uniq] = unique(t_nativo);
+                senal_flat_u = double(senal_flat(idx_uniq));
+                
                 if Fs_nativa < 10
-                    senal_sinc = interp1(t_nativo, double(senal_flat), t_master, 'previous', 'extrap');
+                    senal_sinc = interp1(t_nativo_u, senal_flat_u, t_master, 'previous', 'extrap');
                 else
-                    senal_sinc = interp1(t_nativo, double(senal_flat), t_master, 'linear', 'extrap');
+                    senal_sinc = interp1(t_nativo_u, senal_flat_u, t_master, 'linear', 'extrap');
                 end
                 matrizPlana(:, i) = senal_sinc;
             end
@@ -584,6 +596,10 @@ function AVA_Core_System()
             
             logConsola('Escribiendo el archivo CSV limpio...');
             fid = fopen(nombreCSV, 'w');
+            if fid == -1
+                error('No se pudo crear el archivo CSV. Cierrelo si esta abierto en otro programa.');
+            end
+            
             fprintf(fid, 'Tiempo_s,%s\n', strjoin(senalesValidas, ','));
             matrizSalida = [t_master, matrizPlana]';
             formato = ['%.4f', repmat(',%.4f', 1, length(senalesValidas)), '\n'];
@@ -595,10 +611,12 @@ function AVA_Core_System()
             logConsola('==================================================');
             
             UI.btnConvertirEDF.Enable = 'on';
+            UI.Fig.Pointer = 'arrow';
         catch ME
             logConsola('ERROR CRITICO:');
             logConsola(ME.message);
             UI.btnConvertirEDF.Enable = 'on';
+            UI.Fig.Pointer = 'arrow';
         end
     end
 
@@ -606,13 +624,16 @@ function AVA_Core_System()
     function ejecutarAnalisisPro()
         if Archivos.Senales == "", uialert(UI.Fig, 'Seleccione un CSV.', 'Aviso'); return; end
         try
+            UI.Fig.Pointer = 'watch'; % MEJORA UX: Reloj de Arena
+            drawnow;
+            
             removerLineasGuia();
             
             opts = detectImportOptions(Archivos.Senales);
             nombresColumnas = opts.VariableNames;
             
             data = readmatrix(Archivos.Senales, 'CommentStyle', '#');
-            if size(data, 1) < 10, uialert(UI.Fig, 'CSV invalido o muy corto.', 'Error'); return; end
+            if size(data, 1) < 10, error('CSV invalido o muy corto.'); end
             
             cfgAn = Config; 
             isEDF = false;
@@ -644,11 +665,11 @@ function AVA_Core_System()
                 e1 = abs(data(:,idxD) - base1);
                 e2 = abs(data(:,idxS) - base2);
                 
-                % FUSIÓN BILATERAL MATEMÁTICA (Sin ploteo independiente)
+                % FUSIÓN BILATERAL MATEMÁTICA
                 vEMG_Raw = max(e1, e2);
                 vEMG = movmean(vEMG_Raw, round(fsReal * 0.25), 'omitnan'); 
                 
-                % ACTIGRAFÍA SINTÉTICA (Proxy derivado de la energia del EMG)
+                % ACTIGRAFÍA SINTÉTICA
                 energia_cinetica = abs(diff([0; vEMG_Raw]));
                 vSVM = movmean(energia_cinetica, round(fsReal * 0.5), 'omitnan');
                 
@@ -659,14 +680,14 @@ function AVA_Core_System()
                 end
                 vSVM(vSVM > 2) = 2; 
                 
-                vSPO2 = data(:,idxO2);
-                vBPM = data(:,idxHR);
+                if ~isempty(idxO2), vSPO2 = data(:,idxO2); else, vSPO2 = NaN(size(vT)); end
+                if ~isempty(idxHR), vBPM = data(:,idxHR); else, vBPM = NaN(size(vT)); end
                 
                 cfgAn.Umbrales.SVM_Movimiento = 0; 
                 ruido_fondo = std(vEMG(vEMG < median(vEMG, 'omitnan')), 'omitnan'); 
                 cfgAn.Umbrales.EMG_Contraccion = median(vEMG, 'omitnan') + max(8, ruido_fondo * 4); 
             else
-                uialert(UI.Fig, 'Formato no reconocido: Los encabezados no coinciden con AVA ni Hospital.', 'Error'); return;
+                error('Formato no reconocido: Los encabezados no coinciden con AVA ni Hospital.');
             end
             
             [Analisis.Anotaciones, EpisodiosNav] = procesarAASM(vT, vEMG, vSVM, vSPO2, fsReal, cfgAn);
@@ -701,8 +722,10 @@ function AVA_Core_System()
             ax4 = uiaxes(gGrid); title(ax4, 'BPM'); plot(ax4, vT, vBPM, 'r'); ylim(ax4, [40 160]); 
             
             UI.AxesAnaLista = [ax1, ax2, ax3, ax4]; 
+            UI.Fig.Pointer = 'arrow';
             cambiarPanel(UI.PnlAna); navegarEpisodios(0);
         catch ME
+            UI.Fig.Pointer = 'arrow';
             uialert(UI.Fig, sprintf('Error al procesar:\n%s', ME.message), 'Error');
         end
     end
