@@ -46,7 +46,6 @@ AVA Nexus audita el sueño aplicando la fisiología clínica paso a paso:
 
 * `/Firmware`: Código fuente en C++ para los nodos ESP32 con algoritmos *Drift-Free* y auto-calibración.
 * `/Dashboard`: Archivo fuente principal `AVA_Core_System.m` que contiene la interfaz gráfica, el motor de adquisición UDP, el convertidor EDF y el procesador AASM.
-* `/Documentacion`: Manuales de uso y referencia de la arquitectura de telemetría.
 
 ---
 
