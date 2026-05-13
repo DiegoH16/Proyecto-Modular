@@ -1,5 +1,5 @@
 # AVA Nexus
-### *Plataforma de Monitoreo y Análisis Polisomnográfico para el Síndrome de Piernas Inquietas (SPI)*
+### *Plataforma de Monitoreo y Análisis para el Síndrome de Piernas Inquietas (SPI)*
 
 **AVA Nexus** es un sistema modular integral de grado médico diseñado para la detección, monitoreo continuo y análisis del Síndrome de Piernas Inquietas (SPI/RLS). En su versión **V7.5**, el sistema ha evolucionado para funcionar como una arquitectura de **Edge Computing** en tiempo real (con hardware propio) y como un **Analizador Universal de archivos EDF** hospitalarios, procesando rigurosamente las métricas clínicas de la *American Academy of Sleep Medicine (AASM)* de forma local.
 
