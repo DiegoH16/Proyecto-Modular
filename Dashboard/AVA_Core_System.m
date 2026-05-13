@@ -1,4 +1,18 @@
-function AVA_Core_System()
+/* Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
+    
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+    
+         http://www.apache.org/licenses/LICENSE-2.0
+    
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+ */
+ function AVA_Core_System()
     clearvars; clc; close all force;
     
     %% --- 1. CONFIGURACIÓN CLÍNICA ESTRICTA (100 Hz) ---
@@ -59,7 +73,7 @@ function AVA_Core_System()
 
     UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Envolvente (AD8232 + DSP)'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 3];
     UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM (DSP)'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 3];
-    
+
     numPuntosGrafica = 6000; 
     UI.lineaEMG = animatedline(UI.axEMG_TR, 'Color', [1 0.5 0], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     UI.lineaSVM = animatedline(UI.axSVM_TR, 'Color', [0 0.4 1], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
@@ -353,7 +367,7 @@ function AVA_Core_System()
             ax1 = uiaxes(gGrid); title(ax1, 'EMG Envolvente + PLM (AASM)'); hold(ax1,'on'); grid(ax1, 'on');
             plot(ax1, vT, vEMG, 'Color', [0.6 0.6 0.6]); plot(ax1, vT, Analisis.Anotaciones * max(10, max(vEMG)), 'r', 'LineWidth', 1.5);
             ax2 = uiaxes(gGrid); title(ax2, 'Actigrafía SVM'); plot(ax2, vT, vSVM, 'Color', [0 0.4 0.8]); grid(ax2, 'on');
-            ax3 = uiaxes(gGrid); title(ax3, 'SpO2 % (Detección Hipoxia)'); hold(ax3, 'on'); 
+            ax3 = uiaxes(gGrid); title(ax3, 'SpO2 %'); hold(ax3, 'on'); 
             plot(ax3, vT, vSPO2, 'g'); plot(ax3, vT, movmean(vSPO2, fsReal * 120, 'omitnan'), 'k--', 'LineWidth', 1); ylim(ax3, [85 100]); 
             ax4 = uiaxes(gGrid); title(ax4, 'BPM'); plot(ax4, vT, vBPM, 'r'); ylim(ax4, [40 160]); 
             
@@ -425,8 +439,6 @@ function AVA_Core_System()
         % =========================================================
         % 1. CÁLCULO DE SPO2 (MATEMÁTICA EXACTA DE LA VERSIÓN 1)
         % =========================================================
-        % Tomamos solo las últimas 150 muestras (1.5s) para evitar el 
-        % ruido de baja frecuencia (respiración) en la desviación estándar.
         vent_spo2 = round(fs * 1.5);
         bR_spo2 = bR(end-vent_spo2+1 : end);
         bI_spo2 = bI(end-vent_spo2+1 : end);
@@ -438,11 +450,9 @@ function AVA_Core_System()
         ac_i = std(bI_spo2 - dc_i);
         
         if dc_r > 0 && dc_i > 0
-            % R = (AC Rojo / DC Rojo) / (AC Infrarrojo / DC Infrarrojo)
             R = (ac_r / dc_r) / (ac_i / dc_i);
-            s_calc = 110 - (25 * R); % Fórmula directa de tu V1
+            s_calc = 110 - (25 * R); 
             
-            % Límites de seguridad médicos
             if s_calc > 100, s_calc = 99; end
             if s_calc < 80, s_calc = 80; end 
             spo2 = s_calc;
@@ -456,39 +466,28 @@ function AVA_Core_System()
         dc_i_bpm = mean(bI_bpm);
         
         try
-            % V1 usaba: movmean(bI-dc_i, 5) con MinPeakDistance = 10
-            % Adaptado a 100 Hz y ajustado para 240 BPM MAX (MinPeakDistance = 25)
             senal_suavizada = movmean(bI_bpm - dc_i_bpm, 10);
-            
-            % EL CAMBIO ESTÁ AQUÍ (MinPeakDistance a 25)
-            [pks, locs] = findpeaks(senal_suavizada, 'MinPeakDistance', 25, 'MinPeakHeight',std(senal_suavizada)*0.5);
+            [~, locs] = findpeaks(senal_suavizada, 'MinPeakDistance', 25, 'MinPeakHeight',std(senal_suavizada)*0.5);
             
             if length(locs) > 1
-                % Diferencia de tiempo en segundos usando 'fs' (100 Hz)
                 dt = diff(locs) / fs; 
                 b_calc = mean(60 ./ dt);
                 
-                % EL CAMBIO ESTÁ AQUÍ (Rango de 30 a 220 BPM)
                 if b_calc >= 30 && b_calc <= 220
                     bpm = b_calc;
-                    is_artifact = false; % Datos limpios y válidos
+                    is_artifact = false; 
                 end
             end
         catch
-            % Silencio, si falla matemáticamente es artefacto/ruido
         end
         
-        % Excepción: Si logra calcular SpO2 pero aún no detecta el segundo pico de BPM
         if ~isnan(spo2) && isnan(bpm)
-            is_artifact = false; % Permitir pasar para no congelar la SpO2
+            is_artifact = false; 
         end
     end    
     
     function [anotFinal, mEpi, validosPLM] = procesarAASM(t, e, s, spo2_data, fs, cfg)
         fus = (e > cfg.Umbrales.EMG_Contraccion) & (s > cfg.Umbrales.SVM_Movimiento);
-        
-        spo2_base = movmean(spo2_data, fs * 120, 'omitnan');
-        exclusionRespiratoria = movmax(double((spo2_base - spo2_data) >= 3), round(fs * 10) * 2) > 0;
         
         fl = diff([0; fus(:); 0]); iI = find(fl==1); iF = find(fl==-1)-1;
         mPlm_Candidatos = []; mEpi = []; validosPLM = [];
@@ -503,7 +502,7 @@ function AVA_Core_System()
         
         for i = 1:length(iIU)
             dur = (iFU(i) - iIU(i)) / fs; 
-            if dur >= 0.5 && dur <= 10.0 && sum(exclusionRespiratoria(iIU(i):iFU(i))) == 0
+            if dur >= 0.5 && dur <= 10.0
                 mPlm_Candidatos = [mPlm_Candidatos; iIU(i), iFU(i)]; %#ok<AGROW>
             end 
         end
