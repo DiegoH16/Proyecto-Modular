@@ -1,62 +1,65 @@
 # AVA Nexus
-### *Plataforma de Monitoreo Ambulatorio Edge-Computing para el Síndrome de Piernas Inquietas (SPI)*
+### *Plataforma de Monitoreo y Análisis Polisomnográfico para el Síndrome de Piernas Inquietas (SPI)*
 
-**AVA Nexus** es un sistema modular integral de grado médico diseñado para la detección y monitoreo continuo del Síndrome de Piernas Inquietas (SPI/RLS). En su versión más reciente, el sistema ha evolucionado hacia una arquitectura de **Edge Computing**, procesando rigurosamente las métricas clínicas de la *American Academy of Sleep Medicine (AASM)* de forma local. Esto garantiza un análisis en tiempo real, protección contra desbordamientos de memoria (OOM-Safe) y latencia cero al eliminar la dependencia de servidores en la nube.
-
----
-
-## ✨ Características Principales (V6.2)
-
-* **Monitoreo Multimodal de Grado Clínico:** Adquisición simultánea y sincronizada de Electromiografía tibial (EMG), Actigrafía (SVM), Frecuencia Cardíaca (BPM) y Saturación de Oxígeno (SpO2).
-* **Endurance & OOM-Safe:** El núcleo de MATLAB está optimizado mediante *Ring Buffers* y carga por *Chunks*, permitiendo grabar estudios completos de **hasta 10 horas continuas (1.8 millones de muestras)** en computadoras estándar (mínimo 8GB RAM) sin riesgo de cuelgues o fugas de memoria.
-* **Telemetría Zero-Drift:** Sincronización de nodos de hardware mediante un acumulador de microsegundos (`micros()`) que garantiza un muestreo perfecto y libre de deriva a **50.00 Hz exactos** durante toda la noche.
-* **Procesamiento AASM en el Borde:** Sustitución de IA en la nube por un motor determinista ultrarrápido que aplica las reglas oficiales de la AASM para detectar y agrupar Movimientos Periódicos de las Extremidades (PLMS) y diagnosticar SPI.
-* **Exportación de Alta Precisión:** Generación automática de datasets universales en **CSV** (12 decimales de precisión médica) y reportes de anotaciones clínicas en **TXT** para validación médica o investigación (Ground Truth).
+**AVA Nexus** es un sistema modular integral de grado médico diseñado para la detección, monitoreo continuo y análisis del Síndrome de Piernas Inquietas (SPI/RLS). En su versión **V7.5**, el sistema ha evolucionado para funcionar como una arquitectura de **Edge Computing** en tiempo real (con hardware propio) y como un **Analizador Universal de archivos EDF** hospitalarios, procesando rigurosamente las métricas clínicas de la *American Academy of Sleep Medicine (AASM)* de forma local.
 
 ---
 
-## 🛠 Stack Tecnológico
+## Características Principales (V7.5)
 
-### **Hardware (Nodos Inteligentes ESP32)**
-* **Procesamiento:** Microcontroladores **ESP32** con conectividad Wi-Fi (UDP) optimizados para evitar bloqueos del bus I2C.
-* **Nodo Tobillo (Maestro):** Acelerómetro/Giroscopio **MPU6050** de 6 ejes para cinemática y frontend **AD8232** para capturar biopotenciales EMG en la pierna.
-* **Nodo Bíceps (Esclavo):** Sensor óptico reflectivo **MAX30102** procesando fotopletismografía (PPG) pura para extraer SpO2 y frecuencia cardíaca.
-* **Autonomía:** Gestión de energía mediante módulos **TP4056** preparados para >10 horas de funcionamiento.
-
-### **Software (Dashboard Analítico)**
-* **Núcleo de Procesamiento:** Desarrollado en **MATLAB (R2018b+)**, implementando *Thread-Safe Logging*, filtrado EMA (Exponential Moving Average) en tiempo real y *Graceful Disconnects* ante fallos de red.
-* **Interfaz Dinámica:** UI con renderizado por lotes (*batching* gráfico) y *downsampling* visual para mantener 25 FPS sin saturar la GPU.
+* **Analizador AASM Determinista:** Sustitución de "cajas negras" por un motor matemático que aplica estrictamente los manuales de la AASM para diferenciar Movimientos Aislados (LM) de Series Patológicas (PLM).
+* **Convertidor Universal EDF a CSV:** Integra una herramienta que lee estudios polisomnográficos hospitalarios (`.edf`), despliega un **Diccionario Clínico** para traducir la nomenclatura de los sensores (EEG, EOG, EMG, SpO2), aísla los canales necesarios y los sincroniza matemáticamente a 100 Hz, rellenando micro-cortes para evitar desbordamientos de datos.
+* **Actigrafía Sintética & Compuerta de Ruido (Noise Gate):** Cuando procesa datos de hospital sin acelerómetro, el sistema genera una *Actigrafía Virtual* calculando la derivada de la energía cinética del EMG. Además, blinda el análisis contra escalas ruidosas usando un umbral dinámico basado en la desviación estándar del reposo del paciente.
+* **Fusión Bilateral Automática:** Capacidad de importar EMG de ambas piernas simultáneamente, aplicando la regla clínica de superposición para crear una envolvente consolidada.
+* **Monitoreo Multimodal Hardware:** Adquisición simultánea y sincronizada por telemetría (UDP) de EMG tibial, Actigrafía (SVM), Frecuencia Cardíaca (BPM) y SpO2 a **100.00 Hz exactos**, libres de deriva (*Zero-Drift*).
 
 ---
 
-## 🔬 Metodología de Evaluación (Reglas AASM)
+## Stack Tecnológico
 
-AVA Nexus abandona las cajas negras y audita el sueño aplicando estrictamente la fisiología clínica:
+### **Software (Dashboard Analítico AVA Core)**
+* **Núcleo de Procesamiento:** Desarrollado en **MATLAB**, optimizado mediante *Ring Buffers* y carga por *Chunks*. Permite grabar y analizar estudios de **hasta 10 horas continuas (más de 3.6 millones de muestras)** sin cuelgues ni fugas de memoria (OOM-Safe).
+* **Interfaz de Alta Eficiencia:** UI con limitador de refresco adaptativo (`limitrate`) y líneas de guía no destructivas, garantizando latencia cero en la captura de paquetes UDP.
 
-1. **Detección Base (Fusión Sensorial):** Combinación multiplicativa de la envolvente EMG y la acelerometría SVM para aislar el movimiento primario.
-2. **Micro-cortes (Debounce):** Fusión automática de eventos separados por menos de 0.5 segundos.
-3. **Validación PLM:** Un espasmo se considera un *Movimiento Periódico de las Piernas (PLM)* válido si su duración neta está estrictamente entre **0.5s y 10.0s**.
-4. **Diagnóstico SPI:** El sistema agrupa los PLMs. Si ocurren **≥ 4 eventos** separados por un intervalo de descanso de entre **5 y 90 segundos**, se cataloga como una serie SPI positiva.
-5. **Correlación Autonómica (Arousal):** Monitoreo continuo de SpO2 y fluctuaciones de BPM para diferenciar el SPI de trastornos respiratorios del sueño (como la Apnea Obstructiva).
-
----
-
-## 📂 Estructura del Repositorio
-
-* `/Firmware`: Código fuente en C++ para los nodos ESP32 (Tobillo y Bíceps), con algoritmos *Drift-Free* y auto-calibración.
-* `/Dashboard`: Archivos fuente del núcleo de MATLAB (`AVA_Core_System.m`) con la arquitectura V6.2 Endurance.
+### **Hardware Domiciliario (Nodos ESP32)**
+* **Procesamiento:** Microcontroladores **ESP32** con conectividad Wi-Fi (UDP).
+* **Nodo Tobillo:** Acelerómetro **MPU6050** de 6 ejes (cinemática) y frontend **AD8232** (biopotenciales EMG).
+* **Nodo Bíceps:** Sensor óptico **MAX30102** con procesamiento DSP robusto para extraer SpO2 y frecuencia cardíaca descartando artefactos de movimiento.
 
 ---
 
-## 🛡 Confidencialidad, Respaldo y Estándares
+## Metodología de Evaluación (Reglas AASM Aplicadas)
 
-Pensado para la usabilidad clínica en entornos domiciliarios, el sistema incluye un mecanismo de **Backup Incremental Oculto** en caché que salva los datos cada 5 minutos, garantizando que ninguna falla eléctrica o desconexión corrompa el estudio de un paciente. Los datos crudos se exportan en formatos abiertos compatibles con Pandas (Python), R y Excel, democratizando la investigación médica del sueño.
+AVA Nexus audita el sueño aplicando la fisiología clínica paso a paso:
+
+1. **Umbral Dinámico (Amplitud):** El movimiento debe superar en al menos **8 μV** la línea base del reposo local (aplanado mediante filtros de media móvil para evitar derivas).
+2. **Micro-cortes (Fusión):** Contracciones separadas por **< 0.5 segundos** se unen en un solo evento.
+3. **Validación de Movimiento Aislado (LM):** El espasmo debe durar estrictamente entre **0.5s y 10.0s**. Movimientos más cortos (micro-temblores) o más largos (cambios de postura) se descartan.
+4. **Agrupación Periódica (Serie PLM):** * Se requiere un mínimo de **4 LMs consecutivos**.
+   * **Periodicidad:** El inicio de un LM y el siguiente deben estar separados por **5.0 a 90.0 segundos**.
+   * **Excepción de Movimiento Intercalado (iLM):** Si un espasmo ocurre a menos de 5.0 segundos del anterior, el sistema *no* lo suma a la serie, pero *tampoco la rompe*, midiendo el tiempo contra el siguiente evento válido para mantener la cadena clínica.
+5. **Correlación Autonómica:** Referencia cruzada con SpO2 y BPM para aislar LMs secundarios a eventos respiratorios.
+
+---
+
+## Estructura del Repositorio
+
+* `/Firmware`: Código fuente en C++ para los nodos ESP32 con algoritmos *Drift-Free* y auto-calibración.
+* `/Dashboard`: Archivo fuente principal `AVA_Core_System.m` que contiene la interfaz gráfica, el motor de adquisición UDP, el convertidor EDF y el procesador AASM.
+* `/Documentacion`: Manuales de uso y referencia de la arquitectura de telemetría.
+
+---
+
+## Respaldo y Estandarización
+
+Pensado para la usabilidad en entornos domiciliarios e investigativos, el sistema incluye un mecanismo de **Backup Incremental Oculto** (`.cache_incremental`) que salva los datos cada pocos minutos. Los datos procesados se exportan como **CSV** (con formato estandarizado), permitiendo la fácil integración con herramientas de ciencia de datos como Pandas (Python) o R, y facilitando la validación del diagnóstico de SPI por parte de los neurólogos.
 
 ---
 *Desarrollado como solución tecnológica integral para la democratización del diagnóstico avanzado en medicina del sueño.*
 
 ---
-## ⚖ Licencia
+
+## Licencia
 
 Este proyecto está bajo la [Apache License 2.0]. Consulta el archivo [LICENSE](LICENSE) para más detalles.
 
