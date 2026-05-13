@@ -18,42 +18,94 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
     clearvars; clc; close all force;
     
     %% --- 1. CONFIGURACIÓN CLÍNICA ESTRICTA (100 Hz) ---
-    Config = struct(...
-        'Puertos', struct('Tobillo', 8888, 'Biceps', 8889), ...
-        'Muestreo', struct('Fs_Hz', 100, 'VentanaGrafica_s', 60), ...
-        'BufferMax', struct('Horas', 10, 'Muestras', 100 * 3600 * 10), ...
-        'UI', struct('RefrescoGraficas_Muestras', 10, 'RefrescoVitales_Muestras', 25), ... 
-        'Backup', struct('MuestrasIntervalo', 100 * 300), ... 
-        'Umbrales', struct('IR_Minimo_Dedo', 10000, 'EMG_Contraccion', 50, 'SVM_Movimiento', 0.4), ...
-        'Filtros', struct('Alpha_SVM', 0.005, 'Alpha_EMG_HP', 0.05, 'Alpha_EMG_LP', 0.1) ... 
-    );
+    Config = struct();
+    Config.Puertos.Tobillo = 8888;
+    Config.Puertos.Biceps = 8889;
+    Config.Muestreo.Fs_Hz = 100;
+    Config.Muestreo.VentanaGrafica_s = 60;
+    Config.BufferMax.Horas = 10;
+    Config.BufferMax.Muestras = 100 * 3600 * 10;
+    Config.UI.RefrescoGraficas_Muestras = 3; 
+    Config.UI.RefrescoVitales_Muestras = 25;
+    Config.Backup.MuestrasIntervalo = 100 * 300;
+    Config.Umbrales.IR_Minimo_Dedo = 10000;
+    Config.Umbrales.EMG_Contraccion = 50;
+    Config.Umbrales.SVM_Movimiento = 0.4;
+    Config.Filtros.Alpha_SVM = 0.005;
+    Config.Filtros.Alpha_EMG_HP = 0.05;
+    Config.Filtros.Alpha_EMG_LP = 0.1;
 
     %% --- 2. ESTADO GLOBAL Y RING BUFFER EXPANDIDO ---
     N = Config.BufferMax.Muestras;
-    RingBuffer = struct('T', zeros(1, N), 'Ax', zeros(1, N), 'Ay', zeros(1, N), 'Az', zeros(1, N), ...
-                        'EMG_Raw', zeros(1, N), 'Red_Raw', zeros(1, N), 'IR_Raw', zeros(1, N), ...
-                        'EMG_Env', zeros(1, N), 'SVM_Ac', zeros(1, N), 'SPO2', NaN(1, N), ...
-                        'BPM', NaN(1, N), 'Anot', false(1, N), 'Idx', 1, 'Count', 0, 'Full', false);
+    
+    RingBuffer = struct();
+    RingBuffer.T = zeros(1, N);
+    RingBuffer.Ax = zeros(1, N);
+    RingBuffer.Ay = zeros(1, N);
+    RingBuffer.Az = zeros(1, N);
+    RingBuffer.EMG_Raw = zeros(1, N);
+    RingBuffer.Red_Raw = zeros(1, N);
+    RingBuffer.IR_Raw = zeros(1, N);
+    RingBuffer.EMG_Env = zeros(1, N);
+    RingBuffer.SVM_Ac = zeros(1, N);
+    RingBuffer.SPO2 = NaN(1, N);
+    RingBuffer.BPM = NaN(1, N);
+    RingBuffer.Anot = false(1, N);
+    RingBuffer.Idx = 1;
+    RingBuffer.Count = 0;
+    RingBuffer.Full = false;
 
     numCalibracion = Config.Muestreo.Fs_Hz * 25; 
-    Estado = struct(...
-        'Capturando', false, 't0_Tobillo', NaN, 'DedoDetectado', false, ...
-        'UltimoBackupIdx', 1, ...
-        'Calibracion', struct('Activa', true, 'Cuenta', 0, ...
-                              'MuestrasDescarte', Config.Muestreo.Fs_Hz * 5, ...
-                              'MuestrasRequeridas', Config.Muestreo.Fs_Hz * 30, ...
-                              'EMG_Data', zeros(1, numCalibracion), 'SVM_Data', zeros(1, numCalibracion)), ...
-        'DSP', struct('EMG_Baseline', 0, 'EMG_Envelope', 0, 'SVM_Baseline', 1.0), ...
-        'Vitales', struct('UltimoRed', 0, 'UltimoIR', 0, 'SPO2', NaN, 'BPM', NaN, ...
-                          'SPO2_UI', NaN, 'BPM_UI', NaN, ... 
-                          'BufferRed', [], 'BufferIR', []), ... 
-        'UI', struct('ContraccionPrevia', false, 'MuestrasTobillo', 0, 'MuestrasBiceps', 0, ...
-                     'MuestrasDesdeUltimoBackup', 0, 'SPO2Text', '', 'BPMText', '') ...
-    );
+    
+    Estado = struct();
+    Estado.Capturando = false;
+    Estado.t0_Tobillo = NaN;
+    Estado.DedoDetectado = false;
+    Estado.UltimoBackupIdx = 1;
+    Estado.TiempoUltimoPaquete = tic;
+    
+    Estado.Calibracion.Activa = true;
+    Estado.Calibracion.Cuenta = 0;
+    Estado.Calibracion.MuestrasDescarte = Config.Muestreo.Fs_Hz * 5;
+    Estado.Calibracion.MuestrasRequeridas = Config.Muestreo.Fs_Hz * 30;
+    Estado.Calibracion.EMG_Data = zeros(1, numCalibracion);
+    Estado.Calibracion.SVM_Data = zeros(1, numCalibracion);
+    
+    Estado.DSP.EMG_Baseline = 0;
+    Estado.DSP.EMG_Envelope = 0;
+    Estado.DSP.SVM_Baseline = 1.0;
+    
+    Estado.Vitales.UltimoRed = 0;
+    Estado.Vitales.UltimoIR = 0;
+    Estado.Vitales.SPO2 = NaN;
+    Estado.Vitales.BPM = NaN;
+    Estado.Vitales.SPO2_UI = NaN;
+    Estado.Vitales.BPM_UI = NaN;
+    Estado.Vitales.BufferRed = [];
+    Estado.Vitales.BufferIR = [];
+    
+    Estado.UI.ContraccionPrevia = false;
+    Estado.UI.MuestrasTobillo = 0;
+    Estado.UI.MuestrasBiceps = 0;
+    Estado.UI.MuestrasDesdeUltimoBackup = 0;
+    Estado.UI.SPO2Text = '';
+    Estado.UI.BPMText = '';
 
-    Analisis = struct('T', [], 'Anotaciones', [], 'EventosPLM', [], 'IdxNav', 0, 'TotPLM', 0, 'TotEpisodios', 0);
-    Archivos = struct('Senales', "", 'Anotaciones', "");
-    Red = struct('UdpTobillo', [], 'UdpBiceps', []);
+    Analisis = struct();
+    Analisis.T = [];
+    Analisis.Anotaciones = [];
+    Analisis.EventosPLM = [];
+    Analisis.IdxNav = 0;
+    Analisis.TotPLM = 0;
+    Analisis.TotEpisodios = 0;
+    
+    Archivos = struct();
+    Archivos.Senales = "";
+    Archivos.Anotaciones = "";
+    
+    Red = struct();
+    Red.UdpTobillo = [];
+    Red.UdpBiceps = [];
     
     limpiezaCierre = onCleanup(@() liberarRecursos(Red));
 
@@ -67,44 +119,52 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
     UI.PnlAdq  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
     UI.PnlAna  = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
 
+    % --- MENÚ PRINCIPAL ---
     uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V7.5', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
     uibutton(UI.PnlMenu, 'Text', '1. Adquisición de Datos (UDP)', 'FontSize', 18, 'Position', [400, 450, 400, 60], 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlAdq));
     uibutton(UI.PnlMenu, 'Text', '2. Analizador Clínico (SPI)', 'FontSize', 18, 'Position', [400, 350, 400, 60], 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlAna));
 
-    gAdq = uigridlayout(UI.PnlAdq, [6, 3], 'RowHeight', {'1x', '1x', 80, 70, 60, 60}, 'Padding', 20);
+    % --- PANEL DE ADQUISICIÓN ---
+    gAdq = uigridlayout(UI.PnlAdq, [6, 4], 'RowHeight', {'1x', '1x', 80, 70, 60, 60}, 'ColumnWidth', {'1x', '1x', '1x', 140}, 'Padding', 20);
 
-    UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Envolvente (AD8232 + DSP)'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 3];
-    UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM (DSP)'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 3];
+    UI.axEMG_TR = uiaxes(gAdq); title(UI.axEMG_TR, 'EMG Envolvente (AD8232 + DSP)'); UI.axEMG_TR.Layout.Row = 1; UI.axEMG_TR.Layout.Column = [1 4];
+    UI.axSVM_TR = uiaxes(gAdq); title(UI.axSVM_TR, 'Actigrafía SVM (DSP)'); UI.axSVM_TR.Layout.Row = 2; UI.axSVM_TR.Layout.Column = [1 4];
 
     numPuntosGrafica = 6000; 
     UI.lineaEMG = animatedline(UI.axEMG_TR, 'Color', [1 0.5 0], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
     UI.lineaSVM = animatedline(UI.axSVM_TR, 'Color', [0 0.4 1], 'LineWidth', 1.5, 'MaximumNumPoints', numPuntosGrafica); 
 
-    pnlVit = uigridlayout(gAdq, [1, 2]); pnlVit.Layout.Row = 3; pnlVit.Layout.Column = [1 3];
+    pnlVit = uigridlayout(gAdq, [1, 2]); pnlVit.Layout.Row = 3; pnlVit.Layout.Column = [1 4];
     UI.lblSPO2 = uilabel(pnlVit, 'Text', '--% SpO2', 'FontSize', 45, 'FontWeight', 'bold', 'FontColor', [0 0.4 0.8], 'HorizontalAlignment', 'center'); 
     UI.lblBPM  = uilabel(pnlVit, 'Text', '-- BPM', 'FontSize', 45, 'FontWeight', 'bold', 'HorizontalAlignment', 'center'); 
 
-    pnlDet = uipanel(gAdq, 'BackgroundColor', [0.95 0.95 0.95]); pnlDet.Layout.Row = 4; pnlDet.Layout.Column = [1 3];
+    pnlDet = uipanel(gAdq, 'BackgroundColor', [0.95 0.95 0.95]); pnlDet.Layout.Row = 4; pnlDet.Layout.Column = [1 4];
     gDet = uigridlayout(pnlDet, [1, 1]);
     UI.lblLed = uilabel(gDet, 'Text', ' EN ESPERA ', 'FontSize', 22, 'FontWeight', 'bold', 'BackgroundColor', [0.5 0.5 0.5], 'FontColor', 'w', 'HorizontalAlignment', 'center');
-    UI.lblInfo = uilabel(gAdq, 'Text', 'Listo.', 'FontSize', 12, 'HorizontalAlignment', 'center');
-    UI.lblInfo.Layout.Row = 5; UI.lblInfo.Layout.Column = [1 2];
+    
+    UI.lblInfo = uilabel(gAdq, 'Text', 'Listo para conectar.', 'FontSize', 12, 'HorizontalAlignment', 'center');
+    UI.lblInfo.Layout.Row = 5; UI.lblInfo.Layout.Column = [1 3];
 
     UI.lblMemoria = uilabel(gAdq, 'Text', 'RAM: --', 'FontSize', 12, 'HorizontalAlignment', 'right');
-    UI.lblMemoria.Layout.Row = 5; UI.lblMemoria.Layout.Column = 3;
+    UI.lblMemoria.Layout.Row = 5; UI.lblMemoria.Layout.Column = 4;
+    
     UI.btnUDP = uibutton(gAdq, 'Text', '▶ Conectar Hardware', 'FontSize', 16, 'FontWeight', 'bold', 'BackgroundColor', [0.2 0.6 0.2], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) alternarCaptura());
     UI.btnUDP.Layout.Row = 6; UI.btnUDP.Layout.Column = [1 2];
 
     btnExp = uibutton(gAdq, 'Text', 'Finalizar y Exportar', 'FontSize', 14, 'BackgroundColor', [0.1 0.1 0.1], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) detenerYExportar());
     btnExp.Layout.Row = 6; btnExp.Layout.Column = 3;
+    
+    btnVolverAdq = uibutton(gAdq, 'Text', '🏠 Volver', 'FontSize', 14, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
+    btnVolverAdq.Layout.Row = 6; btnVolverAdq.Layout.Column = 4;
 
+    % --- PANEL DE ANÁLISIS ---
     gAna = uigridlayout(UI.PnlAna, [2, 1], 'RowHeight', {45, '1x'}, 'Padding', 5);
-    gToolbar = uigridlayout(gAna, [1, 10], 'ColumnWidth', {120, 120, 120, 40, 80, 80, 60, '1x', 140, 80}, 'Padding', 2);
+    gToolbar = uigridlayout(gAna, [1, 10], 'ColumnWidth', {120, 120, 140, 30, 60, 60, 60, '1x', 120, 160}, 'Padding', 2);
 
     uibutton(gToolbar, 'Text', '📁 Cargar CSV', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) cargarArchivo('DATOS'));
     uibutton(gToolbar, 'Text', '📝 Cargar TXT', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) cargarArchivo('ANOT'));
 
-    UI.lblArchivoData = uilabel(gToolbar, 'Text', '...', 'FontSize', 9, 'FontColor', [0.4 0.4 0.4], 'WordWrap', 'off');
+    UI.lblArchivoData = uilabel(gToolbar, 'Text', 'Ningún archivo', 'FontSize', 9, 'FontColor', [0.4 0.4 0.4], 'WordWrap', 'off');
     uilabel(gToolbar, 'Text', '|', 'HorizontalAlignment', 'center');
     
     uibutton(gToolbar, 'Text', '<< Ant', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) navegarEpisodios(-1));
@@ -114,7 +174,8 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
     UI.lblEpi = uilabel(gToolbar, 'Text', 'SPI: 0 / 0 | Episodios: --', 'FontSize', 13, 'FontWeight', 'bold', 'FontColor', [0.7 0.1 0.1], 'HorizontalAlignment', 'center');
 
     uibutton(gToolbar, 'Text', '⚙️ PROCESAR', 'BackgroundColor', [0 0.4 0.8], 'FontColor', 'w', 'FontSize', 12, 'FontWeight', 'bold', 'ButtonPushedFcn', @(~,~) ejecutarAnalisisPro());
-    uibutton(gToolbar, 'Text', 'Volver', 'FontSize', 12, 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
+    uibutton(gToolbar, 'Text', '🏠 VOLVER AL MENÚ', 'FontSize', 12, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'FontWeight', 'bold', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
+    
     UI.pnlGraficasAna = uipanel(gAna, 'BorderType', 'none', 'BackgroundColor', 'w');
 
     %% --- 4. BUCLE PRINCIPAL (DESACOPLADO) ---
@@ -124,6 +185,15 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
                 lineasB = leerYValidarBatch(Red.UdpBiceps, 5); 
                 lineasT = leerYValidarBatch(Red.UdpTobillo, 7); 
                 
+                if isempty(lineasT) && isempty(lineasB)
+                    if toc(Estado.TiempoUltimoPaquete) > 2.0 && (Estado.UI.MuestrasTobillo > 0 || Estado.UI.MuestrasBiceps > 0)
+                        UI.lblInfo.Text = '⚠️ SENSOR DESCONECTADO (Sin datos > 2s)'; 
+                        UI.lblInfo.FontColor = [1 0 0];
+                    end
+                else
+                    Estado.TiempoUltimoPaquete = tic;
+                end
+
                 % ==============================================================
                 % 1. PROCESAMIENTO DEL BÍCEPS (TOTALMENTE INDEPENDIENTE)
                 % ==============================================================
@@ -144,7 +214,6 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
                         Estado.DedoDetectado = (ir_raw > Config.Umbrales.IR_Minimo_Dedo);
                         Estado.UI.MuestrasBiceps = Estado.UI.MuestrasBiceps + 1;
 
-                        % --- ACTUALIZACIÓN DE UI DEL BÍCEPS ---
                         if mod(Estado.UI.MuestrasBiceps, Config.UI.RefrescoVitales_Muestras) == 0 
                             [tempSPO2, tempBPM, is_artifact] = detectarBPMRobusto(Estado.Vitales.BufferRed, Estado.Vitales.BufferIR, Config.Muestreo.Fs_Hz); 
                             
@@ -241,7 +310,6 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
                         
                         Estado.UI.MuestrasTobillo = Estado.UI.MuestrasTobillo + 1;
 
-                        % --- ACTUALIZACIÓN DE UI DEL TOBILLO ---
                         if mod(Estado.UI.MuestrasTobillo, Config.UI.RefrescoGraficas_Muestras) == 0
                             if contraccionActual ~= Estado.UI.ContraccionPrevia
                                 if contraccionActual
@@ -255,7 +323,6 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
                             mostrarMemoriaSegura();
                         end
                         
-                        % --- GUARDADO EN BUFFER (Sincronizado al reloj del Tobillo) ---
                         Estado.UI.MuestrasDesdeUltimoBackup = Estado.UI.MuestrasDesdeUltimoBackup + 1;
                         if Estado.UI.MuestrasDesdeUltimoBackup > Config.Backup.MuestrasIntervalo
                             backupIncrementalOptimizado(RingBuffer, Estado.UltimoBackupIdx, Config.BufferMax.Muestras);
@@ -263,16 +330,15 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
                             Estado.UI.MuestrasDesdeUltimoBackup = 0;
                         end
                         
-                        guardarEnRingBuffer(tRelativo, ax, ay, az, emg_crudo, Estado.Vitales.UltimoRed, Estado.Vitales.UltimoIR, ...
-                                            Estado.DSP.EMG_Envelope, svm_ac, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
+                        guardarEnRingBuffer(tRelativo, ax, ay, az, emg_crudo, Estado.Vitales.UltimoRed, Estado.Vitales.UltimoIR, Estado.DSP.EMG_Envelope, svm_ac, Estado.Vitales.SPO2, Estado.Vitales.BPM, contraccionActual, Config);
                     end
                 end
             catch ME
                 logSistema('WARN', ['Excepción: ', ME.message]);
             end
         end
-        drawnow limitrate; 
-        pause(0.01); 
+        drawnow; 
+        pause(0.005); 
     end
 
     %% --- 5. FUNCIONES DE CONTROL PRINCIPALES ---
@@ -280,6 +346,7 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
         Estado.Capturando = ~Estado.Capturando;
         if Estado.Capturando
             Estado.t0_Tobillo = NaN; 
+            Estado.TiempoUltimoPaquete = tic; 
             Estado.Calibracion.Activa = true; Estado.Calibracion.Cuenta = 0;
             Estado.DSP.EMG_Baseline = 0; Estado.DSP.EMG_Envelope = 0; Estado.DSP.SVM_Baseline = 1.0; 
             Estado.UI.ContraccionPrevia = false; 
@@ -308,6 +375,19 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
         Estado.Capturando = false; liberarRecursos(Red);
         if RingBuffer.Count == 0, uialert(UI.Fig, 'Sin datos.', 'Aviso'); return; end
         
+        prompt = {'Ingrese el identificador del paciente (Ej. Paciente-1, ID-456):'};
+        dlgtitle = 'Guardar Estudio Clínico';
+        definput = {'Paciente-1'};
+        respuesta = inputdlg(prompt, dlgtitle, [1 50], definput);
+        
+        if isempty(respuesta)
+            uialert(UI.Fig, 'Exportación cancelada. Los datos siguen en memoria.', 'Aviso');
+            return; 
+        end
+        
+        idPaciente = regexprep(strtrim(respuesta{1}), '[\\/:*?"<>| ]', '_');
+        if isempty(idPaciente), idPaciente = 'Paciente_Desc'; end
+        
         fStr = char(datetime('now', 'Format', 'yyyyMMdd_HHmm'));
         rutaSalida = fullfile(pwd, 'AVA_Nexus_Data');
         if ~isfolder(rutaSalida), mkdir(rutaSalida); end
@@ -317,24 +397,27 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
         if isempty(t_d), return; end
         
         try
-            nameCSV = fullfile(rutaSalida, sprintf('AVA_Estudio_DataLake_%s.csv', fStr));
-            nameTXT = fullfile(rutaSalida, sprintf('AVA_Anotaciones_%s.txt', fStr));
+            nameCSV = fullfile(rutaSalida, sprintf('%s_%s.csv', idPaciente, fStr));
+            nameTXT = fullfile(rutaSalida, sprintf('%s_Anotaciones_%s.txt', idPaciente, fStr));
+            
             [anotFinal, ~, ~] = procesarAASM(t_d, emgEnv_d, svmAc_d, spo2_d, Config.Muestreo.Fs_Hz, Config);
             
             fid = fopen(nameCSV, 'w');
             fprintf(fid, '# AVA Nexus V7.5 Data Lake (Hardware Timestamps)\n# Exportado: %s\n# Fs_Hz: %d\n# Thr_EMG: %.4f\n# Thr_SVM: %.4f\n', char(datetime('now')), Config.Muestreo.Fs_Hz, Config.Umbrales.EMG_Contraccion, Config.Umbrales.SVM_Movimiento);
             fprintf(fid, 'Time_s_Abs,Ax,Ay,Az,EMG_Raw,Red_Raw,IR_Raw,EMG_Env,SVM_ac,SpO2_pct,BPM_bpm,AASM_SPI\n');
-            for i = 1:length(t_d)
-                fprintf(fid, '%.6f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.6f,%.6f,%.0f,%.0f,%d\n', t_d(i), ax_d(i), ay_d(i), az_d(i), emgRaw_d(i), red_d(i), ir_d(i), emgEnv_d(i), svmAc_d(i), spo2_d(i), bpm_d(i), anotFinal(i));
-            end
+            
+            MatrizSalida = [t_d, ax_d, ay_d, az_d, emgRaw_d, red_d, ir_d, emgEnv_d, svmAc_d, spo2_d, bpm_d, anotFinal]';
+            fprintf(fid, '%.6f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.6f,%.6f,%.0f,%.0f,%d\n', MatrizSalida);
             fclose(fid);
             
             fidTxt = fopen(nameTXT, 'w');
             fprintf(fidTxt, 'Tiempo_s_Abs,Anot_SPI\n');
-            for i = 1:length(t_d), fprintf(fidTxt, '%.6f,%d\n', t_d(i), anotFinal(i)); end
+            fprintf(fidTxt, '%.6f,%d\n', [t_d, anotFinal]');
             fclose(fidTxt);
             
-            uialert(UI.Fig, sprintf('Exportado Correctamente:\n%d muestras', length(t_d)), 'Éxito');
+            try rmdir(fullfile(pwd, 'AVA_Nexus_Data', '.cache_incremental'), 's'); catch; end
+            
+            uialert(UI.Fig, sprintf('Exportado Correctamente:\n%d muestras del %s', length(t_d), idPaciente), 'Éxito');
         catch ME
             uialert(UI.Fig, ['Error crítico: ', ME.message], 'Fallo Sistema');
         end
@@ -347,7 +430,7 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
             data = readmatrix(Archivos.Senales, 'CommentStyle', '#');
             if size(data, 1) < 10, uialert(UI.Fig, 'CSV inválido o muy corto.', 'Error'); return; end
             
-            numCols = size(data, 2); tieneSpO2 = true;
+            numCols = size(data, 2); 
             if numCols >= 11
                 vT = data(:,1); vEMG = data(:,8); vSVM = data(:,9); vSPO2 = data(:,10); vBPM = data(:,11);
             elseif numCols >= 5
@@ -369,8 +452,6 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
             ax1 = uiaxes(gGrid); title(ax1, 'EMG Envolvente + PLM (AASM)'); hold(ax1,'on'); grid(ax1, 'on');
             plot(ax1, vT, vEMG, 'Color', [0.6 0.6 0.6]); plot(ax1, vT, Analisis.Anotaciones * max(10, max(vEMG)), 'r', 'LineWidth', 1.5);
             ax2 = uiaxes(gGrid); title(ax2, 'Actigrafía SVM'); plot(ax2, vT, vSVM, 'Color', [0 0.4 0.8]); grid(ax2, 'on');
-            
-            % Ya no se muestra "Detección Hipoxia" en el título
             ax3 = uiaxes(gGrid); title(ax3, 'SpO2 %'); hold(ax3, 'on'); 
             plot(ax3, vT, vSPO2, 'g'); plot(ax3, vT, movmean(vSPO2, fsReal * 120, 'omitnan'), 'k--', 'LineWidth', 1); ylim(ax3, [85 100]); 
             ax4 = uiaxes(gGrid); title(ax4, 'BPM'); plot(ax4, vT, vBPM, 'r'); ylim(ax4, [40 160]); 
@@ -436,13 +517,9 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
     function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
         spo2 = NaN; bpm = NaN; is_artifact = true;
         
-        % Necesitamos al menos 3 segundos de datos para garantizar picos de BPM
         vent_bpm = fs * 3; 
         if length(bR) < vent_bpm, return; end
         
-        % =========================================================
-        % 1. CÁLCULO DE SPO2 (MATEMÁTICA EXACTA DE LA VERSIÓN 1)
-        % =========================================================
         vent_spo2 = round(fs * 1.5);
         bR_spo2 = bR(end-vent_spo2+1 : end);
         bI_spo2 = bI(end-vent_spo2+1 : end);
@@ -462,37 +539,27 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
             spo2 = s_calc;
         end
         
-        % =========================================================
-        % 2. CÁLCULO DE BPM (FILTRO PARA ONDA DICRÓTICA)
-        % =========================================================
         bR_bpm = bR(end-vent_bpm+1 : end);
         bI_bpm = bI(end-vent_bpm+1 : end);
         dc_i_bpm = mean(bI_bpm);
         
         try
             bI_AC = bI_bpm - dc_i_bpm;
-            
-            % CAMBIO 1: Suavizado más agresivo (fs/5) para "borrar" el rebote
             senal_suavizada = movmean(bI_AC, round(fs / 5));
-            
-            % CAMBIO 2: Umbral de altura más exigente (0.75 en vez de 0.5)
             umbral = std(senal_suavizada, 'omitnan') * 0.75;
             
-            % MinPeakDistance a fs*0.25 (permite hasta 240 BPM)
             [~, locs] = findpeaks(senal_suavizada, 'MinPeakDistance', round(fs*0.25), 'MinPeakHeight', umbral);
             
             if length(locs) >= 5
                 dt = diff(locs) / fs; 
                 b_calc = mean(60 ./ dt);
                 
-                % Rango fisiológico real ampliado (30 - 220 BPM)
                 if b_calc >= 30 && b_calc <= 220
                     bpm = b_calc;
                     is_artifact = false; 
                 end
             end
         catch
-            % Silencio, si falla matemáticamente es artefacto/ruido
         end
         
         if ~isnan(spo2) && isnan(bpm)
@@ -514,7 +581,6 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
         end
         iIU(end+1,1)=cA; iFU(end+1,1)=cF;
         
-        % Ya no descartamos por eventos respiratorios (SpO2), el análisis es puro motor (SPI/PLM)
         for i = 1:length(iIU)
             dur = (iFU(i) - iIU(i)) / fs; 
             if dur >= 0.5 && dur <= 10.0
@@ -604,8 +670,14 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
     end
 
     function actualizarEjesGrafica(ejes, tAct, vSeg)
-        m = floor(tAct / vSeg); 
-        for i = 1:length(ejes), xlim(ejes(i), [m * vSeg, (m + 1) * vSeg]); end
+        if tAct < vSeg
+            limites = [0, vSeg];
+        else
+            limites = [tAct - vSeg, tAct];
+        end
+        for i = 1:length(ejes)
+            xlim(ejes(i), limites);
+        end
     end
 
     function cambiarPanel(pTarget)
@@ -615,8 +687,12 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
     end
 
     function liberarRecursos(R)
-        if isfield(R, 'UdpTobillo') && isvalid(R.UdpTobillo), clear R.UdpTobillo; end
-        if isfield(R, 'UdpBiceps') && isvalid(R.UdpBiceps), clear R.UdpBiceps; end
+        if isfield(R, 'UdpTobillo') && ~isempty(R.UdpTobillo) && isvalid(R.UdpTobillo)
+            clear R.UdpTobillo; 
+        end
+        if isfield(R, 'UdpBiceps') && ~isempty(R.UdpBiceps) && isvalid(R.UdpBiceps)
+            clear R.UdpBiceps; 
+        end
     end
 
     function cerrarAplicacion(src, ~)
