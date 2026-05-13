@@ -13,8 +13,7 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
      See the License for the specific language governing permissions and
      limitations under the License.
      %}
- 
- 
+
  function AVA_Core_System()
     clearvars; clc; close all force;
     
@@ -370,6 +369,8 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
             ax1 = uiaxes(gGrid); title(ax1, 'EMG Envolvente + PLM (AASM)'); hold(ax1,'on'); grid(ax1, 'on');
             plot(ax1, vT, vEMG, 'Color', [0.6 0.6 0.6]); plot(ax1, vT, Analisis.Anotaciones * max(10, max(vEMG)), 'r', 'LineWidth', 1.5);
             ax2 = uiaxes(gGrid); title(ax2, 'Actigrafía SVM'); plot(ax2, vT, vSVM, 'Color', [0 0.4 0.8]); grid(ax2, 'on');
+            
+            % Ya no se muestra "Detección Hipoxia" en el título
             ax3 = uiaxes(gGrid); title(ax3, 'SpO2 %'); hold(ax3, 'on'); 
             plot(ax3, vT, vSPO2, 'g'); plot(ax3, vT, movmean(vSPO2, fsReal * 120, 'omitnan'), 'k--', 'LineWidth', 1); ylim(ax3, [85 100]); 
             ax4 = uiaxes(gGrid); title(ax4, 'BPM'); plot(ax4, vT, vBPM, 'r'); ylim(ax4, [40 160]); 
@@ -462,26 +463,36 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
         end
         
         % =========================================================
-        % 2. CÁLCULO DE BPM (LÓGICA ADAPTADA DE LA VERSIÓN 1)
+        % 2. CÁLCULO DE BPM (FILTRO PARA ONDA DICRÓTICA)
         % =========================================================
         bR_bpm = bR(end-vent_bpm+1 : end);
         bI_bpm = bI(end-vent_bpm+1 : end);
         dc_i_bpm = mean(bI_bpm);
         
         try
-            senal_suavizada = movmean(bI_bpm - dc_i_bpm, 10);
-            [~, locs] = findpeaks(senal_suavizada, 'MinPeakDistance', 25, 'MinPeakHeight',std(senal_suavizada)*0.5);
+            bI_AC = bI_bpm - dc_i_bpm;
             
-            if length(locs) > 1
+            % CAMBIO 1: Suavizado más agresivo (fs/5) para "borrar" el rebote
+            senal_suavizada = movmean(bI_AC, round(fs / 5));
+            
+            % CAMBIO 2: Umbral de altura más exigente (0.75 en vez de 0.5)
+            umbral = std(senal_suavizada, 'omitnan') * 0.75;
+            
+            % MinPeakDistance a fs*0.25 (permite hasta 240 BPM)
+            [~, locs] = findpeaks(senal_suavizada, 'MinPeakDistance', round(fs*0.25), 'MinPeakHeight', umbral);
+            
+            if length(locs) >= 5
                 dt = diff(locs) / fs; 
                 b_calc = mean(60 ./ dt);
                 
+                % Rango fisiológico real ampliado (30 - 220 BPM)
                 if b_calc >= 30 && b_calc <= 220
                     bpm = b_calc;
                     is_artifact = false; 
                 end
             end
         catch
+            % Silencio, si falla matemáticamente es artefacto/ruido
         end
         
         if ~isnan(spo2) && isnan(bpm)
@@ -503,6 +514,7 @@ Copyright 2026 Diego Gutiérrez Hermosillo Medina, Obed Simón Aceves Gutiérrez
         end
         iIU(end+1,1)=cA; iFU(end+1,1)=cF;
         
+        % Ya no descartamos por eventos respiratorios (SpO2), el análisis es puro motor (SPI/PLM)
         for i = 1:length(iIU)
             dur = (iFU(i) - iIU(i)) / fs; 
             if dur >= 0.5 && dur <= 10.0
