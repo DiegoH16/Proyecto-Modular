@@ -464,10 +464,10 @@ function AVA_Core_System()
             "     NO suma a la serie, pero TAMPOCO la rompe. El sistema lo ignora y"
             "     mide el tiempo hasta el siguiente espasmo valido."
             ""
-            "Actigrafia Sintetica y Compuerta de Ruido:"
+            "🛡️ Compuerta de Ruido (Noise Gate):"
             "   Si se cargan datos hospitalarios sin acelerometro (EDF), el sistema"
-            "   calcula una 'Actigrafia Sintetica' basandose en la energia cinetica"
-            "   del musculo y aplica un umbral dinamico para evitar falsos positivos."
+            "   aplica un umbral dinamico basado en el ruido de fondo para evitar"
+            "   falsos positivos."
         ];
         uialert(UI.Fig, strjoin(mensaje, newline), 'Reglas Clinicas AASM', 'Icon', 'info');
     end
@@ -669,16 +669,8 @@ function AVA_Core_System()
                 vEMG_Raw = max(e1, e2);
                 vEMG = movmean(vEMG_Raw, round(fsReal * 0.25), 'omitnan'); 
                 
-                % ACTIGRAFÍA SINTÉTICA
-                energia_cinetica = abs(diff([0; vEMG_Raw]));
-                vSVM = movmean(energia_cinetica, round(fsReal * 0.5), 'omitnan');
-                
-                s_svm = sort(vSVM(~isnan(vSVM)));
-                if length(s_svm) > 100
-                    p99 = s_svm(max(1, round(length(s_svm)*0.99)));
-                    if p99 > 0, vSVM = vSVM / p99; end
-                end
-                vSVM(vSVM > 2) = 2; 
+                % Hospital no tiene SVM, se desactiva para ahorrar recursos
+                vSVM = ones(size(vT)); 
                 
                 if ~isempty(idxO2), vSPO2 = data(:,idxO2); else, vSPO2 = NaN(size(vT)); end
                 if ~isempty(idxHR), vBPM = data(:,idxHR); else, vBPM = NaN(size(vT)); end
@@ -711,7 +703,7 @@ function AVA_Core_System()
             
             ax2 = uiaxes(gGrid); 
             if isEDF
-                title(ax2, 'Actigrafia SVM (SINTETICA: Derivada de Energia EMG)'); 
+                title(ax2, 'Actigrafia SVM (No disponible en estudio Hospitalario)'); 
             else
                 title(ax2, 'Actigrafia SVM (Sensor Fisico 3D)'); 
             end
@@ -784,9 +776,11 @@ function AVA_Core_System()
     function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
         spo2 = NaN; bpm = NaN; is_artifact = true;
         
-        vent_bpm = fs * 3; 
+        % CORRECCIÓN: Ampliamos la ventana a 6 segundos para corazones en reposo
+        vent_bpm = fs * 6; 
         if length(bR) < vent_bpm, return; end
         
+        % SpO2 usa una ventana rápida de 1.5 segundos
         vent_spo2 = round(fs * 1.5);
         bR_spo2 = bR(end-vent_spo2+1 : end);
         bI_spo2 = bI(end-vent_spo2+1 : end);
@@ -817,7 +811,8 @@ function AVA_Core_System()
             
             [~, locs] = findpeaks(senal_suavizada, 'MinPeakDistance', round(fs*0.25), 'MinPeakHeight', umbral);
             
-            if length(locs) >= 5
+            % CORRECCIÓN: Solo exigimos 3 latidos en 6 segundos (mínimo 30 BPM)
+            if length(locs) >= 3
                 dt = diff(locs) / fs; 
                 b_calc = mean(60 ./ dt);
                 
