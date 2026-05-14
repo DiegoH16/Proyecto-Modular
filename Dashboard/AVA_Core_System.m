@@ -112,7 +112,7 @@ function AVA_Core_System()
 
     %% --- 3. CONSTRUCCIÓN DE INTERFAZ GRÁFICA ---
     UI = struct();
-    UI.Fig = uifigure('Name', 'AVA Nexus V7.5 | Host-Sync Telemetry (100 Hz)', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
+    UI.Fig = uifigure('Name', 'AVA Nexus V7.8 | Spectral Edition (100 Hz)', 'Color', 'w', 'Position', [50, 50, 1200, 900]);
     UI.Fig.CloseRequestFcn = @cerrarAplicacion;
     UI.AxesAnaLista = [];
 
@@ -122,7 +122,7 @@ function AVA_Core_System()
     UI.PnlConv = uipanel(UI.Fig, 'Position', [1 1 1200 900], 'BackgroundColor', 'w', 'Visible', 'off');
 
     % --- MENÚ PRINCIPAL ---
-    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V7.5', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
+    uilabel(UI.PnlMenu, 'Text', 'AVA NEXUS V7.8', 'FontSize', 45, 'FontWeight', 'bold', 'Position', [450, 650, 400, 60], 'HorizontalAlignment', 'center');
     uibutton(UI.PnlMenu, 'Text', '1. Adquisicion de Datos (UDP)', 'FontSize', 18, 'Position', [400, 450, 400, 60], 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlAdq));
     uibutton(UI.PnlMenu, 'Text', '2. Analizador Clinico (SPI)', 'FontSize', 18, 'Position', [400, 350, 400, 60], 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlAna));
     uibutton(UI.PnlMenu, 'Text', '3. Convertidor EDF a CSV', 'FontSize', 18, 'Position', [400, 250, 400, 60], 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlConv));
@@ -157,7 +157,7 @@ function AVA_Core_System()
     btnExp = uibutton(gAdq, 'Text', 'Finalizar y Exportar', 'FontSize', 14, 'BackgroundColor', [0.1 0.1 0.1], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) detenerYExportar());
     btnExp.Layout.Row = 6; btnExp.Layout.Column = 3;
     
-    btnVolverAdq = uibutton(gAdq, 'Text', 'VOLVER AL MENU', 'FontSize', 14, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
+    btnVolverAdq = uibutton(gAdq, 'Text', '🏠 VOLVER', 'FontSize', 14, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
     btnVolverAdq.Layout.Row = 6; btnVolverAdq.Layout.Column = 4;
 
     % --- PANEL DE ANÁLISIS ---
@@ -178,7 +178,7 @@ function AVA_Core_System()
     uibutton(gToolbar, 'Text', 'ℹ️ Reglas AASM', 'FontSize', 12, 'BackgroundColor', [0.9 0.9 0.9], 'FontWeight', 'bold', 'ButtonPushedFcn', @(~,~) mostrarReglasAASM());
     
     uibutton(gToolbar, 'Text', '⚙️ PROCESAR', 'BackgroundColor', [0 0.4 0.8], 'FontColor', 'w', 'FontSize', 12, 'FontWeight', 'bold', 'ButtonPushedFcn', @(~,~) ejecutarAnalisisPro());
-    uibutton(gToolbar, 'Text', 'VOLVER AL MENU', 'FontSize', 12, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'FontWeight', 'bold', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
+    uibutton(gToolbar, 'Text', '🏠 VOLVER', 'FontSize', 12, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'FontWeight', 'bold', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
     
     UI.pnlGraficasAna = uipanel(gAna, 'BorderType', 'none', 'BackgroundColor', 'w');
 
@@ -195,7 +195,7 @@ function AVA_Core_System()
     UI.txtConsola = uitextarea(gConv, 'Value', 'Listo para convertir. Por favor cargue un archivo EDF.', 'Editable', 'off', 'FontSize', 12, 'FontName', 'Consolas');
     UI.txtConsola.Layout.Row = 3; UI.txtConsola.Layout.Column = [1 3];
 
-    btnVolverConv = uibutton(gConv, 'Text', 'VOLVER AL MENU', 'FontSize', 14, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
+    btnVolverConv = uibutton(gConv, 'Text', '🏠 VOLVER', 'FontSize', 14, 'BackgroundColor', [0.8 0.2 0.2], 'FontColor', 'w', 'ButtonPushedFcn', @(~,~) cambiarPanel(UI.PnlMenu));
     btnVolverConv.Layout.Row = 4; btnVolverConv.Layout.Column = 3;
 
     %% --- 4. BUCLE PRINCIPAL (DESACOPLADO) ---
@@ -223,7 +223,9 @@ function AVA_Core_System()
                         Estado.Vitales.BufferRed = [Estado.Vitales.BufferRed, red_raw]; 
                         Estado.Vitales.BufferIR  = [Estado.Vitales.BufferIR, ir_raw];
                         
-                        if length(Estado.Vitales.BufferRed) > Config.Muestreo.Fs_Hz * 30
+                        % Reducimos la ventana requerida en el buffer para la FFT
+                        % 5 segundos es más que suficiente para buena resolución
+                        if length(Estado.Vitales.BufferRed) > Config.Muestreo.Fs_Hz * 5
                             Estado.Vitales.BufferRed = Estado.Vitales.BufferRed(2:end);
                             Estado.Vitales.BufferIR  = Estado.Vitales.BufferIR(2:end);
                         end
@@ -246,6 +248,7 @@ function AVA_Core_System()
                                         Estado.Vitales.SPO2_UI = tempSPO2;
                                         Estado.Vitales.BPM_UI = tempBPM;
                                     else
+                                        % Filtro de suavizado visual
                                         Estado.Vitales.SPO2_UI = 0.8 * Estado.Vitales.SPO2_UI + 0.2 * tempSPO2;
                                         Estado.Vitales.BPM_UI  = 0.8 * Estado.Vitales.BPM_UI  + 0.2 * tempBPM;
                                     end
@@ -349,8 +352,6 @@ function AVA_Core_System()
                 end
             catch ME
                 logSistema('WARN', ['Excepcion en Bucle UDP: ', ME.message]);
-                
-                % MEJORA DE SEGURIDAD: Limpiar buffer UDP si hay un desbordamiento o error
                 if isfield(Red, 'UdpTobillo') && ~isempty(Red.UdpTobillo) && isvalid(Red.UdpTobillo)
                     flush(Red.UdpTobillo);
                 end
@@ -359,8 +360,6 @@ function AVA_Core_System()
                 end
             end
         end
-        
-        % MEJORA DE RENDIMIENTO: Evitar congelamiento de CPU, refresco a ~20 FPS.
         drawnow limitrate; 
     end
 
@@ -424,7 +423,6 @@ function AVA_Core_System()
             
             [anotFinal, ~] = procesarAASM(t_d, emgEnv_d, svmAc_d, spo2_d, Config.Muestreo.Fs_Hz, Config);
             
-            % MEJORA SEGURIDAD ARCHIVOS: Verificar que no esté bloqueado por Excel
             fid = fopen(nameCSV, 'w');
             if fid == -1
                 error('No se pudo crear el archivo CSV. Verifique que no este abierto en otro programa.');
@@ -464,7 +462,7 @@ function AVA_Core_System()
             "     NO suma a la serie, pero TAMPOCO la rompe. El sistema lo ignora y"
             "     mide el tiempo hasta el siguiente espasmo valido."
             ""
-            "🛡️ Compuerta de Ruido (Noise Gate):"
+            "Compuerta de Ruido (Noise Gate):"
             "   Si se cargan datos hospitalarios sin acelerometro (EDF), el sistema"
             "   aplica un umbral dinamico basado en el ruido de fondo para evitar"
             "   falsos positivos."
@@ -496,7 +494,7 @@ function AVA_Core_System()
 
     function procesarEDF_UI()
         UI.btnConvertirEDF.Enable = 'off';
-        UI.Fig.Pointer = 'watch'; % MEJORA UX: Reloj de arena
+        UI.Fig.Pointer = 'watch';
         drawnow;
         
         rutaCompleta = fullfile(Archivos.EDF_Ruta, Archivos.EDF_Input);
@@ -529,7 +527,7 @@ function AVA_Core_System()
                 end
             end
             
-            UI.Fig.Pointer = 'arrow'; % Pausa el reloj de arena para la ventana de diálogo
+            UI.Fig.Pointer = 'arrow'; 
             mensajeInstruccion = {'Seleccione los canales clinicos a exportar:', '(Use Ctrl o Shift para elegir varios)'};
             [idxSeleccion, ok] = listdlg('ListString', cellstr(nombresMostrar), ...
                                          'PromptString', mensajeInstruccion, ...
@@ -543,7 +541,7 @@ function AVA_Core_System()
                 return;
             end
             
-            UI.Fig.Pointer = 'watch'; % Retoma el reloj de arena
+            UI.Fig.Pointer = 'watch'; 
             drawnow;
             
             senalesValidas = todasLasSenales(idxSeleccion);
@@ -579,7 +577,6 @@ function AVA_Core_System()
                 Fs_nativa = length(senal_flat) / tiempoTotal;
                 t_nativo = (0 : length(senal_flat) - 1)' / Fs_nativa;
                 
-                % MEJORA MATEMÁTICA: Evitar error de timestamps duplicados del Hospital
                 [t_nativo_u, idx_uniq] = unique(t_nativo);
                 senal_flat_u = double(senal_flat(idx_uniq));
                 
@@ -624,7 +621,7 @@ function AVA_Core_System()
     function ejecutarAnalisisPro()
         if Archivos.Senales == "", uialert(UI.Fig, 'Seleccione un CSV.', 'Aviso'); return; end
         try
-            UI.Fig.Pointer = 'watch'; % MEJORA UX: Reloj de Arena
+            UI.Fig.Pointer = 'watch'; 
             drawnow;
             
             removerLineasGuia();
@@ -639,13 +636,11 @@ function AVA_Core_System()
             isEDF = false;
             
             if any(contains(nombresColumnas, 'Ax'))
-                % --- CASO A: DATOS NATIVOS AVA NEXUS ---
                 logSistema('INFO', 'Procesando archivo nativo AVA Nexus...');
                 vT = data(:,1); vEMG = data(:,8); vSVM = data(:,9); vSPO2 = data(:,10); vBPM = data(:,11);
                 fsReal = 1 / mean(diff(vT), 'omitnan');
 
             elseif any(contains(nombresColumnas, 'DX1')) || any(contains(nombresColumnas, 'SX1'))
-                % --- CASO B: DATOS HOSPITALARIOS (EDF Transformado) ---
                 logSistema('INFO', 'Procesando archivo de validacion Hospitalaria...');
                 isEDF = true;
                 vT = data(:,1); 
@@ -665,11 +660,9 @@ function AVA_Core_System()
                 e1 = abs(data(:,idxD) - base1);
                 e2 = abs(data(:,idxS) - base2);
                 
-                % FUSIÓN BILATERAL MATEMÁTICA
                 vEMG_Raw = max(e1, e2);
                 vEMG = movmean(vEMG_Raw, round(fsReal * 0.25), 'omitnan'); 
                 
-                % Hospital no tiene SVM, se desactiva para ahorrar recursos
                 vSVM = ones(size(vT)); 
                 
                 if ~isempty(idxO2), vSPO2 = data(:,idxO2); else, vSPO2 = NaN(size(vT)); end
@@ -776,58 +769,54 @@ function AVA_Core_System()
     function [spo2, bpm, is_artifact] = detectarBPMRobusto(bR, bI, fs)
         spo2 = NaN; bpm = NaN; is_artifact = true;
         
-        % CORRECCIÓN: Ampliamos la ventana a 6 segundos para corazones en reposo
-        vent_bpm = fs * 6; 
-        if length(bR) < vent_bpm, return; end
+        N = length(bR);
+        % Necesitamos al menos 4 segundos para tener buena resolución espectral
+        if N < fs * 4 
+            return; 
+        end
         
-        % SpO2 usa una ventana rápida de 1.5 segundos
-        vent_spo2 = round(fs * 1.5);
-        bR_spo2 = bR(end-vent_spo2+1 : end);
-        bI_spo2 = bI(end-vent_spo2+1 : end);
+        % 1. APLICAR TRANSFORMADA RÁPIDA DE FOURIER (FFT)
+        fft_R = abs(fft(bR)) / N;
+        fft_I = abs(fft(bI)) / N;
         
-        dc_r = mean(bR_spo2); 
-        dc_i = mean(bI_spo2);
+        % 2. COMPONENTE DC
+        dc_r = fft_R(1);
+        dc_i = fft_I(1);
         
-        ac_r = std(bR_spo2 - dc_r); 
-        ac_i = std(bI_spo2 - dc_i);
+        if dc_r < 1000 || dc_i < 1000 % Dedo no detectado
+            return;
+        end
         
-        if dc_r > 0 && dc_i > 0
-            R = (ac_r / dc_r) / (ac_i / dc_i);
-            s_calc = 110 - (25 * R); 
-            
-            if s_calc > 100, s_calc = 99; end
-            if s_calc < 80, s_calc = 80; end 
+        % 3. BUSCAR EL PULSO CARDÍACO (0.5 Hz - 3.5 Hz)
+        idx_min = floor(0.5 * N / fs) + 1;
+        idx_max = ceil(3.5 * N / fs) + 1;
+        
+        rango_IR = fft_I(idx_min:idx_max);
+        [ac_i, max_rel_idx] = max(rango_IR);
+        
+        idx_HR = idx_min + max_rel_idx - 1;
+        
+        % 4. COMPONENTE AC PURO
+        ac_r = fft_R(idx_HR);
+        
+        % 5. CÁLCULO CLÍNICO
+        R = (ac_r / dc_r) / (ac_i / dc_i);
+        
+        s_calc = 110 - (25 * R);
+        if s_calc > 100, s_calc = 99; end
+        if s_calc < 70, s_calc = 70; end
+        
+        freq_HR = (idx_HR - 1) * (fs / N);
+        b_calc = freq_HR * 60;
+        
+        % 6. EVALUACIÓN DE CALIDAD
+        ruido_promedio = mean(fft_I(idx_min:end));
+        if ac_i > (ruido_promedio * 2)
             spo2 = s_calc;
-        end
-        
-        bR_bpm = bR(end-vent_bpm+1 : end);
-        bI_bpm = bI(end-vent_bpm+1 : end);
-        dc_i_bpm = mean(bI_bpm);
-        
-        try
-            bI_AC = bI_bpm - dc_i_bpm;
-            senal_suavizada = movmean(bI_AC, round(fs / 5));
-            umbral = std(senal_suavizada, 'omitnan') * 0.75;
-            
-            [~, locs] = findpeaks(senal_suavizada, 'MinPeakDistance', round(fs*0.25), 'MinPeakHeight', umbral);
-            
-            % CORRECCIÓN: Solo exigimos 3 latidos en 6 segundos (mínimo 30 BPM)
-            if length(locs) >= 3
-                dt = diff(locs) / fs; 
-                b_calc = mean(60 ./ dt);
-                
-                if b_calc >= 30 && b_calc <= 220
-                    bpm = b_calc;
-                    is_artifact = false; 
-                end
-            end
-        catch
-        end
-        
-        if ~isnan(spo2) && isnan(bpm)
+            bpm = b_calc;
             is_artifact = false; 
         end
-    end    
+    end
     
     function [anotFinal, EpisodiosNav] = procesarAASM(t, e, s, spo2_data, fs, cfg)
         fus = (e > cfg.Umbrales.EMG_Contraccion) & (s > cfg.Umbrales.SVM_Movimiento);
